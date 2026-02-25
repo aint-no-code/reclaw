@@ -14,6 +14,31 @@
 cargo run -p reclaw-core -- --host 127.0.0.1 --port 18789
 ```
 
+## Static Config
+
+Reclaw Core loads static runtime config from files before applying CLI/env overrides.
+
+Default search order:
+
+1. `/etc/reclaw/config.toml`
+2. `/etc/reclaw/config.json`
+3. `~/.reclaw/config.toml`
+4. `~/.reclaw/config.json`
+
+User-level config overrides `/etc` config, and CLI/env override both.
+
+You can use one explicit file path with:
+
+```bash
+reclaw-core --config /etc/reclaw/config.toml
+```
+
+or:
+
+```bash
+RECLAW_CONFIG=/etc/reclaw/config.toml reclaw-core
+```
+
 ## Quality Gates
 
 ```bash
