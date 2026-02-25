@@ -1061,6 +1061,61 @@ async fn channels_inbound_routes_message_to_chat_session() {
 }
 
 #[tokio::test]
+async fn channel_specific_inbound_route_uses_path_channel() {
+    let server = spawn_server_with(AuthMode::None, |config| {
+        config.channels_inbound_token = Some("bridge-token".to_owned());
+    })
+    .await;
+
+    let client = reqwest::Client::new();
+    let response = client
+        .post(format!("http://{}/channels/slack/inbound", server.addr))
+        .bearer_auth("bridge-token")
+        .json(&json!({
+            "conversationId": "team-chat-7",
+            "text": "hello from path route",
+            "messageId": "m2"
+        }))
+        .send()
+        .await
+        .expect("inbound request should return");
+
+    assert!(response.status().is_success());
+    let payload: Value = response.json().await.expect("response should be json");
+    assert_eq!(payload["ok"], true);
+    assert_eq!(payload["sessionKey"], "agent:main:slack:chat:team-chat-7");
+
+    let mut ws = connect_gateway(server.addr).await;
+    ws.send(Message::Text(
+        connect_frame(None, 1, PROTOCOL_VERSION, "operator", "reclaw-test", &[])
+            .to_string()
+            .into(),
+    ))
+    .await
+    .expect("connect frame should send");
+    let _ = recv_json(&mut ws).await;
+
+    let history = rpc_req(
+        &mut ws,
+        "inbound-2",
+        "chat.history",
+        Some(json!({
+            "sessionKey": "agent:main:slack:chat:team-chat-7",
+            "limit": 20
+        })),
+    )
+    .await;
+    assert_eq!(history["ok"], true);
+    assert!(
+        history["payload"]["messages"]
+            .as_array()
+            .is_some_and(|messages| messages.len() >= 2)
+    );
+
+    server.stop().await;
+}
+
+#[tokio::test]
 async fn telegram_webhook_rejects_invalid_secret() {
     let server = spawn_server_with(AuthMode::None, |config| {
         config.telegram_webhook_secret = Some("secret-123".to_owned());

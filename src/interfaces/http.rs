@@ -21,6 +21,10 @@ pub fn build_router(state: SharedState) -> Router {
         .route("/info", get(info_handler))
         .route("/channels/inbound", post(channels::inbound_handler))
         .route(
+            "/channels/{channel}/inbound",
+            post(channels::inbound_channel_handler),
+        )
+        .route(
             "/channels/telegram/webhook",
             post(telegram::webhook_handler),
         )

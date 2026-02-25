@@ -1,6 +1,6 @@
 use axum::{
     Json,
-    extract::State,
+    extract::{Path, State},
     http::{HeaderMap, StatusCode, header},
     response::IntoResponse,
 };
@@ -30,51 +30,48 @@ pub struct InboundMessageRequest {
     pub metadata: Option<Value>,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChannelInboundRequest {
+    pub conversation_id: String,
+    pub text: String,
+    #[serde(default)]
+    pub agent_id: Option<String>,
+    #[serde(default)]
+    pub sender_id: Option<String>,
+    #[serde(default)]
+    pub message_id: Option<String>,
+    #[serde(default)]
+    pub idempotency_key: Option<String>,
+    #[serde(default)]
+    pub metadata: Option<Value>,
+}
+
 pub async fn inbound_handler(
     State(state): State<SharedState>,
     headers: HeaderMap,
     Json(payload): Json<InboundMessageRequest>,
 ) -> impl IntoResponse {
-    if let Some(required_token) = &state.config().channels_inbound_token
-        && !has_bearer_token(&headers, required_token)
-    {
-        return (
-            StatusCode::UNAUTHORIZED,
-            Json(json!({
-                "ok": false,
-                "error": {
-                    "code": "UNAUTHORIZED",
-                    "message": "invalid or missing bearer token",
-                }
-            })),
-        );
-    }
+    ingress_response(&state, &headers, payload).await
+}
 
-    match ingest_inbound_message(&state, payload).await {
-        Ok(result) => (
-            StatusCode::OK,
-            Json(json!({
-                "ok": true,
-                "sessionKey": result.session_key,
-                "runId": result.run_id,
-                "reply": result.reply,
-            })),
-        ),
-        Err(error) => {
-            let status = if error.code == crate::protocol::ERROR_INVALID_REQUEST {
-                StatusCode::BAD_REQUEST
-            } else {
-                StatusCode::SERVICE_UNAVAILABLE
-            };
-            (
-                status,
-                Json(json!({
-                    "ok": false,
-                    "error": error,
-                })),
-            )
-        }
-    }
+pub async fn inbound_channel_handler(
+    Path(channel): Path<String>,
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+    Json(payload): Json<ChannelInboundRequest>,
+) -> impl IntoResponse {
+    let inbound = InboundMessageRequest {
+        channel,
+        conversation_id: payload.conversation_id,
+        text: payload.text,
+        agent_id: payload.agent_id,
+        sender_id: payload.sender_id,
+        message_id: payload.message_id,
+        idempotency_key: payload.idempotency_key,
+        metadata: payload.metadata,
+    };
+    ingress_response(&state, &headers, inbound).await
 }
 
 #[derive(Debug)]
@@ -216,6 +213,53 @@ fn has_bearer_token(headers: &HeaderMap, expected: &str) -> bool {
     };
 
     subtle::ConstantTimeEq::ct_eq(token.as_bytes(), expected.as_bytes()).into()
+}
+
+async fn ingress_response(
+    state: &SharedState,
+    headers: &HeaderMap,
+    payload: InboundMessageRequest,
+) -> (StatusCode, Json<Value>) {
+    if let Some(required_token) = &state.config().channels_inbound_token
+        && !has_bearer_token(headers, required_token)
+    {
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({
+                "ok": false,
+                "error": {
+                    "code": "UNAUTHORIZED",
+                    "message": "invalid or missing bearer token",
+                }
+            })),
+        );
+    }
+
+    match ingest_inbound_message(state, payload).await {
+        Ok(result) => (
+            StatusCode::OK,
+            Json(json!({
+                "ok": true,
+                "sessionKey": result.session_key,
+                "runId": result.run_id,
+                "reply": result.reply,
+            })),
+        ),
+        Err(error) => {
+            let status = if error.code == crate::protocol::ERROR_INVALID_REQUEST {
+                StatusCode::BAD_REQUEST
+            } else {
+                StatusCode::SERVICE_UNAVAILABLE
+            };
+            (
+                status,
+                Json(json!({
+                    "ok": false,
+                    "error": error,
+                })),
+            )
+        }
+    }
 }
 
 #[cfg(test)]
