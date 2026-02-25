@@ -8,7 +8,7 @@ use tracing::info;
 use crate::{
     application::state::SharedState,
     domain::error::DomainError,
-    interfaces::{channels, openai, telegram, ws},
+    interfaces::{channels, openai, openresponses, telegram, ws},
     rpc::methods::{health, status},
 };
 
@@ -32,6 +32,7 @@ pub fn build_router(state: SharedState) -> Router {
             "/v1/chat/completions",
             post(openai::chat_completions_handler),
         )
+        .route("/v1/responses", post(openresponses::responses_handler))
         .with_state(state)
 }
 

@@ -1396,6 +1396,101 @@ async fn openai_chat_completions_streams_sse_chunks() {
 }
 
 #[tokio::test]
+async fn openresponses_requires_gateway_auth() {
+    let server = spawn_server(AuthMode::Token("gateway-secret".to_owned())).await;
+
+    let client = reqwest::Client::new();
+    let response = client
+        .post(format!("http://{}/v1/responses", server.addr))
+        .json(&json!({
+            "model": "reclaw-core",
+            "input": "hello"
+        }))
+        .send()
+        .await
+        .expect("openresponses request should return");
+
+    assert_eq!(response.status(), reqwest::StatusCode::UNAUTHORIZED);
+    let payload: Value = response.json().await.expect("response should be json");
+    assert_eq!(payload["error"]["type"], "authentication_error");
+
+    server.stop().await;
+}
+
+#[tokio::test]
+async fn openresponses_returns_response_resource_shape() {
+    let server = spawn_server(AuthMode::Token("gateway-secret".to_owned())).await;
+
+    let client = reqwest::Client::new();
+    let response = client
+        .post(format!("http://{}/v1/responses", server.addr))
+        .bearer_auth("gateway-secret")
+        .json(&json!({
+            "model": "support-agent",
+            "user": "alice",
+            "input": [
+                {"role": "user", "content": [{"type": "input_text", "text": "Summarize status"}]}
+            ]
+        }))
+        .send()
+        .await
+        .expect("openresponses request should return");
+
+    assert!(response.status().is_success());
+    let payload: Value = response.json().await.expect("response should be json");
+    assert_eq!(payload["object"], "response");
+    assert_eq!(payload["model"], "support-agent");
+    assert_eq!(payload["status"], "completed");
+    assert_eq!(payload["output"][0]["type"], "message");
+    assert_eq!(payload["output"][0]["role"], "assistant");
+    assert!(
+        payload["output"][0]["content"][0]["text"]
+            .as_str()
+            .is_some_and(|value| value.contains("Echo:"))
+    );
+
+    server.stop().await;
+}
+
+#[tokio::test]
+async fn openresponses_streams_sse_events() {
+    let server = spawn_server(AuthMode::Token("gateway-secret".to_owned())).await;
+
+    let client = reqwest::Client::new();
+    let response = client
+        .post(format!("http://{}/v1/responses", server.addr))
+        .bearer_auth("gateway-secret")
+        .json(&json!({
+            "model": "reclaw-core",
+            "stream": true,
+            "input": "stream me"
+        }))
+        .send()
+        .await
+        .expect("openresponses stream request should return");
+
+    assert!(response.status().is_success());
+    let content_type = response
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or_default()
+        .to_owned();
+    assert!(content_type.starts_with("text/event-stream"));
+
+    let body = response
+        .text()
+        .await
+        .expect("response body should be readable");
+    assert!(body.contains("event: response.created"));
+    assert!(body.contains("event: response.output_text.delta"));
+    assert!(body.contains("event: response.completed"));
+    assert!(body.contains("data: [DONE]"));
+
+    server.stop().await;
+}
+
+#[tokio::test]
 async fn healthz_endpoint_returns_ok_payload() {
     let server = spawn_server(AuthMode::None).await;
 

@@ -3,7 +3,7 @@ use std::convert::Infallible;
 use axum::{
     Json,
     extract::{State, rejection::JsonRejection},
-    http::{HeaderMap, StatusCode, header},
+    http::{HeaderMap, StatusCode},
     response::{
         IntoResponse, Response,
         sse::{Event, Sse},
@@ -15,11 +15,13 @@ use serde_json::{Value, json};
 
 use crate::{
     application::state::SharedState,
-    protocol::{ConnectAuth, ERROR_INVALID_REQUEST},
+    protocol::ERROR_INVALID_REQUEST,
     rpc::{SessionContext, methods, policy},
     security::auth,
     storage::now_unix_ms,
 };
+
+use super::compat::{authorize_gateway_http, extract_text_content, normalize_segment};
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -50,7 +52,7 @@ pub async fn chat_completions_handler(
     headers: HeaderMap,
     payload: Result<Json<Value>, JsonRejection>,
 ) -> Response {
-    if let Err(reason) = ensure_http_auth(&state, &headers) {
+    if let Err(reason) = authorize_gateway_http(&state, &headers) {
         let message = auth::auth_failure_error(reason).message;
         return openai_error(StatusCode::UNAUTHORIZED, &message, "authentication_error");
     }
@@ -159,29 +161,6 @@ pub async fn chat_completions_handler(
         })),
     )
         .into_response()
-}
-
-fn ensure_http_auth(
-    state: &SharedState,
-    headers: &HeaderMap,
-) -> Result<(), auth::AuthFailureReason> {
-    let auth = auth_from_headers(headers);
-    auth::authorize(&state.config().auth_mode, auth.as_ref())
-}
-
-fn auth_from_headers(headers: &HeaderMap) -> Option<ConnectAuth> {
-    let raw = headers.get(header::AUTHORIZATION)?.to_str().ok()?;
-    let token = raw
-        .strip_prefix("Bearer ")
-        .map(str::trim)
-        .filter(|value| !value.is_empty())?;
-
-    Some(ConnectAuth {
-        token: Some(token.to_owned()),
-        device_token: None,
-        // For HTTP, bearer auth is accepted in both token and password modes.
-        password: Some(token.to_owned()),
-    })
 }
 
 fn openai_error(status: StatusCode, message: &str, error_type: &str) -> Response {
@@ -303,35 +282,6 @@ fn build_prompt(messages: &[ChatMessage]) -> Option<String> {
     Some(sections.join("\n\n"))
 }
 
-fn extract_text_content(content: &Value) -> String {
-    if let Some(text) = content.as_str() {
-        return text.to_owned();
-    }
-
-    let read_part = |part: &Value| -> Option<String> {
-        let obj = part.as_object()?;
-        let content_type = obj.get("type").and_then(Value::as_str).unwrap_or_default();
-        let text = obj.get("text").and_then(Value::as_str);
-        let input_text = obj.get("input_text").and_then(Value::as_str);
-
-        match content_type {
-            "text" | "input_text" => text.or(input_text).map(str::to_owned),
-            _ => input_text.or(text).map(str::to_owned),
-        }
-    };
-
-    if let Some(parts) = content.as_array() {
-        return parts
-            .iter()
-            .filter_map(read_part)
-            .filter(|value| !value.trim().is_empty())
-            .collect::<Vec<_>>()
-            .join("\n");
-    }
-
-    read_part(content).unwrap_or_default()
-}
-
 fn resolve_openai_session_key(model: &str, user: Option<&str>) -> String {
     let agent_id = normalize_segment(model);
     let conversation = user
@@ -349,38 +299,9 @@ fn resolve_openai_session_key(model: &str, user: Option<&str>) -> String {
     )
 }
 
-fn normalize_segment(value: &str) -> String {
-    let mut out = String::new();
-    let mut pending_dash = false;
-
-    for ch in value.chars() {
-        let lower = ch.to_ascii_lowercase();
-        if lower.is_ascii_alphanumeric() {
-            if pending_dash && !out.is_empty() {
-                out.push('-');
-            }
-            out.push(lower);
-            pending_dash = false;
-            continue;
-        }
-
-        if lower == '_' || lower == '-' || lower == ':' || lower.is_ascii_whitespace() {
-            pending_dash = true;
-        }
-    }
-
-    out.trim_matches('-').to_owned()
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{build_prompt, normalize_segment};
-
-    #[test]
-    fn normalize_segment_collapses_separators() {
-        assert_eq!(normalize_segment("gpt-4o-mini"), "gpt-4o-mini");
-        assert_eq!(normalize_segment("User Name 123"), "user-name-123");
-    }
+    use super::build_prompt;
 
     #[test]
     fn build_prompt_requires_user_message() {
