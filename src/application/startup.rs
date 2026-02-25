@@ -6,7 +6,8 @@ use tracing_subscriber::{EnvFilter, fmt};
 
 use crate::{
     application::{
-        config::{Args, RuntimeConfig},
+        config::{Args, Command, RuntimeConfig},
+        init_config,
         state::SharedState,
     },
     domain::error::DomainError,
@@ -15,6 +16,13 @@ use crate::{
 };
 
 pub async fn run(args: Args) -> Result<(), DomainError> {
+    if let Some(command) = args.command.clone() {
+        return match command {
+            Command::InitConfig(command_args) => init_config::run(&command_args)
+                .map_err(|error| DomainError::Unavailable(format!("init-config failed: {error}"))),
+        };
+    }
+
     let config = RuntimeConfig::from_args(args)
         .map_err(|error| DomainError::InvalidRequest(format!("configuration error: {error}")))?;
 

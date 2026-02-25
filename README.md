@@ -14,6 +14,26 @@
 cargo run -p reclaw-core -- --host 127.0.0.1 --port 18789
 ```
 
+## Init Config
+
+Initialize base static config files for daemon or user runtime:
+
+```bash
+cargo run -p reclaw-core -- init-config
+```
+
+Initialize both `/etc/reclaw` and `~/.reclaw` in one run:
+
+```bash
+cargo run -p reclaw-core -- init-config --scope both
+```
+
+Run without prompts and overwrite existing config files:
+
+```bash
+cargo run -p reclaw-core -- init-config --scope both --non-interactive --force
+```
+
 ## Static Config
 
 Reclaw Core loads static runtime config from files before applying CLI/env overrides.

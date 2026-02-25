@@ -5,7 +5,7 @@ use std::{
     time::Duration,
 };
 
-use clap::Parser;
+use clap::{Parser, Subcommand, ValueEnum};
 use serde::Deserialize;
 
 const DEFAULT_PORT: u16 = 18_789;
@@ -28,6 +28,9 @@ const DEFAULT_JSON_LOGS: bool = false;
     about = "Reclaw Core (Rust gateway transport + RPC core), forked from OpenClaw"
 )]
 pub struct Args {
+    #[command(subcommand)]
+    pub command: Option<Command>,
+
     #[arg(long, env = "RECLAW_CONFIG")]
     pub config: Option<PathBuf>,
 
@@ -83,6 +86,34 @@ pub struct Args {
     pub json_logs: Option<bool>,
 }
 
+#[derive(Debug, Clone, Subcommand)]
+pub enum Command {
+    /// Initialize static config directories and base config files.
+    InitConfig(InitConfigArgs),
+}
+
+#[derive(Debug, Clone, clap::Args)]
+pub struct InitConfigArgs {
+    /// Where to initialize config files.
+    #[arg(long, value_enum, default_value_t = InitScope::User)]
+    pub scope: InitScope,
+
+    /// Run without prompts; create missing config files automatically.
+    #[arg(long, default_value_t = false)]
+    pub non_interactive: bool,
+
+    /// Overwrite existing config files.
+    #[arg(long, default_value_t = false)]
+    pub force: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum InitScope {
+    User,
+    System,
+    Both,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AuthMode {
     None,
@@ -123,6 +154,10 @@ pub struct RuntimeConfig {
 
 impl RuntimeConfig {
     pub fn from_args(args: Args) -> Result<Self, String> {
+        if args.command.is_some() {
+            return Err("command mode does not produce runtime configuration".to_owned());
+        }
+
         let static_paths = if let Some(explicit) = args.config.clone() {
             vec![explicit]
         } else {
@@ -317,7 +352,7 @@ fn override_option<T>(slot: &mut Option<T>, value: Option<T>) {
     }
 }
 
-fn default_static_config_paths() -> Vec<PathBuf> {
+pub(crate) fn default_static_config_paths() -> Vec<PathBuf> {
     let home = home_dir();
     default_static_config_paths_for(home.as_deref())
 }
@@ -378,6 +413,19 @@ fn home_dir() -> Option<PathBuf> {
         .or_else(|| std::env::var_os("USERPROFILE").map(PathBuf::from))
 }
 
+pub(crate) fn user_config_toml_path() -> Option<PathBuf> {
+    let home = home_dir();
+    user_config_toml_path_for(home.as_deref())
+}
+
+pub(crate) fn user_config_toml_path_for(home: Option<&Path>) -> Option<PathBuf> {
+    home.map(|home| home.join(".reclaw/config.toml"))
+}
+
+pub(crate) fn system_config_toml_path() -> PathBuf {
+    PathBuf::from("/etc/reclaw/config.toml")
+}
+
 fn default_db_path() -> PathBuf {
     home_dir()
         .map(|home| home.join(".reclaw/reclaw.db"))
@@ -415,11 +463,13 @@ mod tests {
 
     use super::{
         Args, AuthMode, RuntimeConfig, default_static_config_paths_for,
-        load_static_config_from_paths, resolve_auth_mode,
+        load_static_config_from_paths, resolve_auth_mode, system_config_toml_path,
+        user_config_toml_path_for,
     };
 
     fn empty_args() -> Args {
         Args {
+            command: None,
             config: None,
             host: None,
             port: None,
@@ -524,5 +574,21 @@ mod tests {
 
         let runtime = RuntimeConfig::from_args(args).expect("runtime config should build");
         assert_eq!(runtime.port, 20000);
+    }
+
+    #[test]
+    fn user_config_path_resolves_with_explicit_home() {
+        let home = std::path::Path::new("/home/reclaw");
+        let path = user_config_toml_path_for(Some(home)).expect("user config path should resolve");
+
+        assert_eq!(path, home.join(".reclaw/config.toml"));
+    }
+
+    #[test]
+    fn system_config_path_is_stable() {
+        assert_eq!(
+            system_config_toml_path(),
+            std::path::PathBuf::from("/etc/reclaw/config.toml")
+        );
     }
 }
