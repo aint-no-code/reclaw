@@ -4,7 +4,9 @@ use futures_util::{SinkExt, StreamExt};
 use reclaw_core::application::{
     config::{AuthMode, RuntimeConfig},
     startup,
+    state::SharedState,
 };
+use reclaw_core::{interfaces::webhooks::ChannelWebhookRegistry, rpc::methods};
 use serde_json::{Value, json};
 use tempfile::TempDir;
 use tokio::{net::TcpListener, sync::oneshot, task::JoinHandle};
@@ -36,6 +38,22 @@ pub(crate) async fn spawn_server_with(
     auth_mode: AuthMode,
     configure: impl FnOnce(&mut RuntimeConfig),
 ) -> ServerHandle {
+    spawn_server_with_and_webhooks(auth_mode, configure, None).await
+}
+
+pub(crate) async fn spawn_server_with_webhooks(
+    auth_mode: AuthMode,
+    configure: impl FnOnce(&mut RuntimeConfig),
+    webhook_registry: ChannelWebhookRegistry,
+) -> ServerHandle {
+    spawn_server_with_and_webhooks(auth_mode, configure, Some(webhook_registry)).await
+}
+
+async fn spawn_server_with_and_webhooks(
+    auth_mode: AuthMode,
+    configure: impl FnOnce(&mut RuntimeConfig),
+    webhook_registry: Option<ChannelWebhookRegistry>,
+) -> ServerHandle {
     let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
         .await
         .expect("listener should bind");
@@ -52,10 +70,31 @@ pub(crate) async fn spawn_server_with(
 
     let (shutdown_tx, shutdown_rx) = oneshot::channel();
     let join = tokio::spawn(async move {
-        let _ = startup::run_with_listener(listener, config, async {
-            let _ = shutdown_rx.await;
-        })
-        .await;
+        if let Some(webhook_registry) = webhook_registry {
+            let state = SharedState::new(
+                config,
+                methods::implemented_methods(),
+                methods::known_events(),
+            )
+            .await
+            .expect("shared state should build");
+
+            let app =
+                reclaw_core::interfaces::http::build_router_with_webhooks(state, webhook_registry);
+            let _ = axum::serve(
+                listener,
+                app.into_make_service_with_connect_info::<SocketAddr>(),
+            )
+            .with_graceful_shutdown(async {
+                let _ = shutdown_rx.await;
+            })
+            .await;
+        } else {
+            let _ = startup::run_with_listener(listener, config, async {
+                let _ = shutdown_rx.await;
+            })
+            .await;
+        }
     });
 
     ServerHandle {

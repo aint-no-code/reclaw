@@ -3,6 +3,10 @@ use std::net::Ipv4Addr;
 use axum::{Json, Router, routing::post};
 use futures_util::SinkExt;
 use reclaw_core::application::config::AuthMode;
+use reclaw_core::application::state::SharedState;
+use reclaw_core::interfaces::webhooks::{
+    ChannelWebhookAdapter, ChannelWebhookRegistry, WebhookFuture,
+};
 use reclaw_core::protocol::PROTOCOL_VERSION;
 use serde_json::{Value, json};
 use tokio::{
@@ -388,6 +392,52 @@ async fn channel_webhook_rejects_unknown_adapter() {
     let payload: Value = response.json().await.expect("response should be json");
     assert_eq!(payload["ok"], false);
     assert_eq!(payload["error"]["code"], "NOT_FOUND");
+
+    server.stop().await;
+}
+
+fn fake_webhook_dispatch<'a>(
+    _state: &'a SharedState,
+    _headers: &'a axum::http::HeaderMap,
+    payload: Value,
+) -> WebhookFuture<'a> {
+    Box::pin(async move {
+        (
+            axum::http::StatusCode::OK,
+            Json(json!({
+                "ok": true,
+                "channel": "fakechat",
+                "payload": payload,
+            })),
+        )
+    })
+}
+
+#[tokio::test]
+async fn channel_webhook_supports_runtime_injected_registry_adapters() {
+    let mut registry = ChannelWebhookRegistry::default();
+    registry.register(ChannelWebhookAdapter {
+        channel: "fakechat",
+        dispatch: fake_webhook_dispatch,
+    });
+
+    let server = super::support::spawn_server_with_webhooks(AuthMode::None, |_| {}, registry).await;
+
+    let client = reqwest::Client::new();
+    let response = client
+        .post(format!("http://{}/channels/fakechat/webhook", server.addr))
+        .json(&json!({
+            "hello": "world"
+        }))
+        .send()
+        .await
+        .expect("channel webhook should return");
+
+    assert!(response.status().is_success());
+    let payload: Value = response.json().await.expect("response should be json");
+    assert_eq!(payload["ok"], true);
+    assert_eq!(payload["channel"], "fakechat");
+    assert_eq!(payload["payload"]["hello"], "world");
 
     server.stop().await;
 }
