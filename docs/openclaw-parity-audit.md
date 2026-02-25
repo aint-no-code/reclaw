@@ -33,19 +33,9 @@ Scope compared: `openclaw/src/gateway/**` and `openclaw/src/channels/plugins/**`
   - `src/gateway/agent-event-assistant-text.ts`
 - Current Rust status:
   - `chat.send` uses deterministic echo response and does not run full agent/tool execution pipeline.
+  - run/idempotency reuse is now guarded for `chat.send` and `agent` to avoid duplicate side effects.
 
-2. Hooks advanced mapping parity (`/hooks/*`) for templated transforms and source/path filters.
-- OpenClaw references:
-  - `src/gateway/hooks-mapping.ts`
-  - `src/gateway/server-http.ts` (`createHooksRequestHandler`)
-- Current Rust status:
-  - `/hooks/wake` and `/hooks/agent` are implemented with auth + base policies.
-  - static path-based mappings are implemented (`hooksMappings`) for `wake` and `agent` actions.
-  - mapping `matchSource`, `messageTemplate`, and `textTemplate` are implemented.
-  - template context supports payload, headers, query params, and request path.
-  - transform modules are implemented (`hooksMappings.transform.module`, optional `export`) with per-request JSON context and override/skip semantics.
-
-3. Plugin/channel runtime parity (dynamic channel plugin system).
+2. Plugin/channel runtime parity (dynamic channel plugin system).
 - OpenClaw references:
   - `src/channels/plugins/**`
   - `src/gateway/server-plugins.ts`
@@ -107,8 +97,7 @@ Scope compared: `openclaw/src/gateway/**` and `openclaw/src/channels/plugins/**`
 
 ## Recommended next implementation order
 
-1. Hooks advanced mapping parity (`/hooks/*`) + conformance tests.
-2. Agent runtime upgrade (replace echo path with real execution + stream events).
-3. Channel plugin runtime abstraction and plugin account/process lifecycle.
-4. Control UI/canvas compatibility surfaces.
-5. Advanced OpenResponses media/tool parity.
+1. Agent runtime upgrade (replace echo path with real execution + stream events).
+2. Channel plugin runtime abstraction and plugin account/process lifecycle.
+3. Control UI/canvas compatibility surfaces.
+4. Advanced OpenResponses media/tool parity.
