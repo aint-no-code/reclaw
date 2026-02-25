@@ -1,0 +1,229 @@
+use serde::Deserialize;
+use serde_json::{Value, json};
+
+use crate::{
+    application::state::SharedState,
+    domain::models::{AgentRunRecord, ChatMessage, SessionRecord},
+    rpc::{
+        SessionContext,
+        dispatcher::map_domain_error,
+        methods::{parse_optional_params, parse_required_params},
+    },
+    storage::now_unix_ms,
+};
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ChatSendParams {
+    #[serde(default)]
+    session_key: Option<String>,
+    #[serde(default)]
+    session_id: Option<String>,
+    message: String,
+    #[serde(default)]
+    idempotency_key: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ChatHistoryParams {
+    #[serde(default)]
+    session_key: Option<String>,
+    #[serde(default)]
+    session_id: Option<String>,
+    #[serde(default)]
+    limit: Option<usize>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ChatAbortParams {
+    #[serde(default)]
+    session_key: Option<String>,
+    #[serde(default)]
+    session_id: Option<String>,
+    #[serde(default)]
+    run_id: Option<String>,
+}
+
+pub async fn handle_send(
+    state: &SharedState,
+    _session: &SessionContext,
+    params: Option<&Value>,
+) -> Result<Value, crate::protocol::ErrorShape> {
+    let parsed: ChatSendParams = parse_required_params("chat.send", params)?;
+
+    let session_key = resolve_session_key(parsed.session_key, parsed.session_id)?;
+    let inbound = sanitize_chat_message(parsed.message)?;
+
+    let run_id = parsed
+        .idempotency_key
+        .and_then(trim_non_empty)
+        .unwrap_or_else(|| format!("chat-{}", uuid::Uuid::new_v4()));
+
+    ensure_session_exists(state, &session_key).await?;
+
+    let now = now_unix_ms();
+    let reply = format!("Echo: {inbound}");
+
+    let messages = vec![
+        ChatMessage {
+            id: format!("msg-{}", uuid::Uuid::new_v4()),
+            role: "user".to_owned(),
+            text: inbound.clone(),
+            status: "final".to_owned(),
+            ts: now,
+            metadata: json!({ "runId": run_id }),
+        },
+        ChatMessage {
+            id: format!("msg-{}", uuid::Uuid::new_v4()),
+            role: "assistant".to_owned(),
+            text: reply.clone(),
+            status: "final".to_owned(),
+            ts: now.saturating_add(1),
+            metadata: json!({ "runId": run_id }),
+        },
+    ];
+
+    state
+        .append_chat_messages(&session_key, &messages)
+        .await
+        .map_err(map_domain_error)?;
+
+    let run = AgentRunRecord {
+        id: run_id.clone(),
+        agent_id: "main".to_owned(),
+        input: inbound,
+        output: reply.clone(),
+        status: "completed".to_owned(),
+        session_key: Some(session_key.clone()),
+        metadata: json!({ "source": "chat.send" }),
+        created_at_ms: now,
+        updated_at_ms: now,
+        completed_at_ms: Some(now),
+    };
+
+    state
+        .upsert_agent_run(&run)
+        .await
+        .map_err(map_domain_error)?;
+
+    Ok(json!({
+        "runId": run_id,
+        "status": "completed",
+        "sessionKey": session_key,
+        "message": reply,
+    }))
+}
+
+pub async fn handle_history(
+    state: &SharedState,
+    params: Option<&Value>,
+) -> Result<Value, crate::protocol::ErrorShape> {
+    let parsed: ChatHistoryParams = parse_required_params("chat.history", params)?;
+    let session_key = resolve_session_key(parsed.session_key, parsed.session_id)?;
+    let limit = parsed.limit.map(|value| value.clamp(1, 1_000));
+
+    let messages = state
+        .list_chat_messages(&session_key, limit)
+        .await
+        .map_err(map_domain_error)?;
+
+    Ok(json!({
+        "sessionKey": session_key,
+        "sessionId": session_key,
+        "messages": messages,
+    }))
+}
+
+pub async fn handle_abort(
+    _state: &SharedState,
+    params: Option<&Value>,
+) -> Result<Value, crate::protocol::ErrorShape> {
+    let parsed: ChatAbortParams = parse_optional_params("chat.abort", params)?;
+    let session_key = parsed
+        .session_key
+        .or(parsed.session_id)
+        .and_then(trim_non_empty)
+        .unwrap_or_else(|| "agent:main:main".to_owned());
+
+    Ok(json!({
+        "ok": true,
+        "aborted": false,
+        "sessionKey": session_key,
+        "runIds": parsed.run_id.into_iter().collect::<Vec<_>>(),
+    }))
+}
+
+fn resolve_session_key(
+    session_key: Option<String>,
+    session_id: Option<String>,
+) -> Result<String, crate::protocol::ErrorShape> {
+    let key = session_key
+        .or(session_id)
+        .and_then(trim_non_empty)
+        .ok_or_else(|| {
+            crate::protocol::ErrorShape::new(
+                crate::protocol::ERROR_INVALID_REQUEST,
+                "invalid chat params: sessionKey is required",
+            )
+        })?;
+    Ok(key)
+}
+
+fn sanitize_chat_message(input: String) -> Result<String, crate::protocol::ErrorShape> {
+    if input.contains('\0') {
+        return Err(crate::protocol::ErrorShape::new(
+            crate::protocol::ERROR_INVALID_REQUEST,
+            "invalid chat.send params: message contains null bytes",
+        ));
+    }
+
+    let trimmed = input.trim();
+    if trimmed.is_empty() {
+        return Err(crate::protocol::ErrorShape::new(
+            crate::protocol::ERROR_INVALID_REQUEST,
+            "invalid chat.send params: message or attachment required",
+        ));
+    }
+
+    Ok(trimmed.to_owned())
+}
+
+async fn ensure_session_exists(
+    state: &SharedState,
+    session_key: &str,
+) -> Result<(), crate::protocol::ErrorShape> {
+    if state
+        .get_session(session_key)
+        .await
+        .map_err(map_domain_error)?
+        .is_some()
+    {
+        return Ok(());
+    }
+
+    let now = now_unix_ms();
+    let session = SessionRecord {
+        id: session_key.to_owned(),
+        title: format!("Session {session_key}"),
+        tags: Vec::new(),
+        metadata: json!({}),
+        created_at_ms: now,
+        updated_at_ms: now,
+    };
+
+    state
+        .upsert_session(&session)
+        .await
+        .map_err(map_domain_error)
+}
+
+fn trim_non_empty(value: String) -> Option<String> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_owned())
+    }
+}
