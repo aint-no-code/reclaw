@@ -1304,6 +1304,98 @@ async fn telegram_webhook_can_send_outbound_reply() {
 }
 
 #[tokio::test]
+async fn openai_chat_completions_requires_gateway_auth() {
+    let server = spawn_server(AuthMode::Token("gateway-secret".to_owned())).await;
+
+    let client = reqwest::Client::new();
+    let response = client
+        .post(format!("http://{}/v1/chat/completions", server.addr))
+        .json(&json!({
+            "model": "reclaw-core",
+            "messages": [{"role": "user", "content": "hello"}]
+        }))
+        .send()
+        .await
+        .expect("openai request should return");
+
+    assert_eq!(response.status(), reqwest::StatusCode::UNAUTHORIZED);
+    let payload: Value = response.json().await.expect("response should be json");
+    assert_eq!(payload["error"]["type"], "authentication_error");
+
+    server.stop().await;
+}
+
+#[tokio::test]
+async fn openai_chat_completions_returns_openai_shape() {
+    let server = spawn_server(AuthMode::Token("gateway-secret".to_owned())).await;
+
+    let client = reqwest::Client::new();
+    let response = client
+        .post(format!("http://{}/v1/chat/completions", server.addr))
+        .bearer_auth("gateway-secret")
+        .json(&json!({
+            "model": "support-agent",
+            "user": "alice",
+            "messages": [
+                {"role": "system", "content": "you are concise"},
+                {"role": "user", "content": "Summarize status"}
+            ]
+        }))
+        .send()
+        .await
+        .expect("openai request should return");
+
+    assert!(response.status().is_success());
+    let payload: Value = response.json().await.expect("response should be json");
+    assert_eq!(payload["object"], "chat.completion");
+    assert_eq!(payload["model"], "support-agent");
+    assert_eq!(payload["choices"][0]["message"]["role"], "assistant");
+    assert!(
+        payload["choices"][0]["message"]["content"]
+            .as_str()
+            .is_some_and(|value| value.contains("Echo:"))
+    );
+
+    server.stop().await;
+}
+
+#[tokio::test]
+async fn openai_chat_completions_streams_sse_chunks() {
+    let server = spawn_server(AuthMode::Token("gateway-secret".to_owned())).await;
+
+    let client = reqwest::Client::new();
+    let response = client
+        .post(format!("http://{}/v1/chat/completions", server.addr))
+        .bearer_auth("gateway-secret")
+        .json(&json!({
+            "model": "reclaw-core",
+            "stream": true,
+            "messages": [{"role": "user", "content": "stream me"}]
+        }))
+        .send()
+        .await
+        .expect("openai stream request should return");
+
+    assert!(response.status().is_success());
+    let content_type = response
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or_default()
+        .to_owned();
+    assert!(content_type.starts_with("text/event-stream"));
+
+    let body = response
+        .text()
+        .await
+        .expect("response body should be readable");
+    assert!(body.contains("chat.completion.chunk"));
+    assert!(body.contains("data: [DONE]"));
+
+    server.stop().await;
+}
+
+#[tokio::test]
 async fn healthz_endpoint_returns_ok_payload() {
     let server = spawn_server(AuthMode::None).await;
 

@@ -8,7 +8,7 @@ use tracing::info;
 use crate::{
     application::state::SharedState,
     domain::error::DomainError,
-    interfaces::{channels, telegram, ws},
+    interfaces::{channels, openai, telegram, ws},
     rpc::methods::{health, status},
 };
 
@@ -27,6 +27,10 @@ pub fn build_router(state: SharedState) -> Router {
         .route(
             "/channels/telegram/webhook",
             post(telegram::webhook_handler),
+        )
+        .route(
+            "/v1/chat/completions",
+            post(openai::chat_completions_handler),
         )
         .with_state(state)
 }
