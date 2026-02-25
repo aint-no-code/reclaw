@@ -208,6 +208,13 @@ dbPath = \"{}\"\n\
 # whatsappOutboundUrl = \"https://relay.example/whatsapp\"\n\
 # whatsappOutboundToken = \"replace-me\"\n\
 \n\
+# External plugin webhook bridge (optional).\n\
+# Uses POST /channels/{{channel}}/webhook fallback when no in-process adapter is registered.\n\
+# [channelWebhookPlugins.extchat]\n\
+# url = \"http://127.0.0.1:4801/webhook\"\n\
+# token = \"replace-me\" # sent via x-reclaw-plugin-token\n\
+# timeoutMs = 10000\n\
+\n\
 # Hooks ingress (OpenClaw-compatible /hooks/* flow).\n\
 # hooksEnabled = true\n\
 # hooksToken = \"replace-me\"\n\

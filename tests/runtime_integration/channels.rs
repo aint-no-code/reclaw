@@ -2,7 +2,7 @@ use std::net::Ipv4Addr;
 
 use axum::{Json, Router, http::header, routing::post};
 use futures_util::SinkExt;
-use reclaw_core::application::config::AuthMode;
+use reclaw_core::application::config::{AuthMode, ChannelWebhookPluginConfig};
 use reclaw_core::application::state::SharedState;
 use reclaw_core::interfaces::webhooks::{
     ChannelWebhookAdapter, ChannelWebhookRegistry, WebhookFuture,
@@ -82,6 +82,65 @@ async fn spawn_outbound_capture(
                     Json(json!({
                         "ok": true,
                         "accepted": true,
+                    }))
+                }
+            }
+        }),
+    );
+
+    let join = tokio::spawn(async move {
+        let _ = axum::serve(listener, app)
+            .with_graceful_shutdown(async {
+                let _ = shutdown_rx.await;
+            })
+            .await;
+    });
+
+    (addr, shutdown_tx, join, body_rx)
+}
+
+async fn spawn_plugin_proxy_capture(
+    route_path: &'static str,
+) -> (
+    std::net::SocketAddr,
+    oneshot::Sender<()>,
+    tokio::task::JoinHandle<()>,
+    mpsc::UnboundedReceiver<(Option<String>, Option<String>, Option<String>, Value)>,
+) {
+    let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
+        .await
+        .expect("mock listener should bind");
+    let addr = listener
+        .local_addr()
+        .expect("mock listener should expose local addr");
+    let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
+    let (body_tx, body_rx) =
+        mpsc::unbounded_channel::<(Option<String>, Option<String>, Option<String>, Value)>();
+
+    let app = Router::new().route(
+        route_path,
+        post({
+            let body_tx = body_tx.clone();
+            move |headers: axum::http::HeaderMap, Json(body): Json<Value>| {
+                let body_tx = body_tx.clone();
+                async move {
+                    let plugin_token = headers
+                        .get("x-reclaw-plugin-token")
+                        .and_then(|value| value.to_str().ok())
+                        .map(str::to_owned);
+                    let forwarded_signature = headers
+                        .get("x-provider-signature")
+                        .and_then(|value| value.to_str().ok())
+                        .map(str::to_owned);
+                    let channel_name = headers
+                        .get("x-reclaw-channel")
+                        .and_then(|value| value.to_str().ok())
+                        .map(str::to_owned);
+                    let _ = body_tx.send((plugin_token, forwarded_signature, channel_name, body));
+                    Json(json!({
+                        "ok": true,
+                        "accepted": true,
+                        "via": "plugin-proxy",
                     }))
                 }
             }
@@ -474,6 +533,53 @@ async fn channel_webhook_rejects_unknown_adapter() {
     assert_eq!(payload["ok"], false);
     assert_eq!(payload["error"]["code"], "NOT_FOUND");
 
+    server.stop().await;
+}
+
+#[tokio::test]
+async fn channel_webhook_proxies_to_configured_plugin_endpoint() {
+    let (relay_addr, relay_shutdown_tx, relay_join, mut relay_rx) =
+        spawn_plugin_proxy_capture("/plugin").await;
+    let server = spawn_server_with(AuthMode::None, |config| {
+        config.channel_webhook_plugins.insert(
+            "extchat".to_owned(),
+            ChannelWebhookPluginConfig {
+                url: format!("http://{relay_addr}/plugin"),
+                token: Some("plugin-secret".to_owned()),
+                timeout_ms: Some(3_000),
+            },
+        );
+    })
+    .await;
+
+    let client = reqwest::Client::new();
+    let response = client
+        .post(format!("http://{}/channels/extchat/webhook", server.addr))
+        .header("x-provider-signature", "sig-xyz")
+        .json(&json!({
+            "event": "message",
+            "text": "from provider"
+        }))
+        .send()
+        .await
+        .expect("channel webhook proxy request should return");
+
+    assert!(response.status().is_success());
+    let payload: Value = response.json().await.expect("response should be json");
+    assert_eq!(payload["ok"], true);
+    assert_eq!(payload["via"], "plugin-proxy");
+
+    let proxied = timeout(std::time::Duration::from_secs(2), relay_rx.recv())
+        .await
+        .expect("plugin proxy request should arrive")
+        .expect("plugin proxy payload should exist");
+    assert_eq!(proxied.0.as_deref(), Some("plugin-secret"));
+    assert_eq!(proxied.1.as_deref(), Some("sig-xyz"));
+    assert_eq!(proxied.2.as_deref(), Some("extchat"));
+    assert_eq!(proxied.3["event"], "message");
+
+    let _ = relay_shutdown_tx.send(());
+    let _ = relay_join.await;
     server.stop().await;
 }
 

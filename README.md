@@ -152,6 +152,17 @@ Reclaw Core `POST`s a normalized JSON payload to the configured URL:
 - `whatsappOutboundUrl` / `RECLAW_WHATSAPP_OUTBOUND_URL`
 - `whatsappOutboundToken` / `RECLAW_WHATSAPP_OUTBOUND_TOKEN`
 
+For external plugin daemons, configure static webhook proxy fallback:
+
+```toml
+[channelWebhookPlugins.extchat]
+url = "http://127.0.0.1:4801/webhook"
+token = "replace-me" # optional, sent as x-reclaw-plugin-token
+timeoutMs = 10000
+```
+
+With this config, `POST /channels/extchat/webhook` is proxied to the plugin URL when no built-in adapter is registered.
+
 ### Hooks Ingress
 
 OpenClaw-compatible `/hooks/*` ingress is available behind explicit config:

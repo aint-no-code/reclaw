@@ -31,7 +31,8 @@ Current default registry includes:
 - Backward-compatible legacy Telegram webhook path:
   - `POST /channels/telegram/webhook`
 
-If `{channel}` has no registered adapter, core returns `404` with `error.code = "NOT_FOUND"`.
+If `{channel}` has no registered in-process adapter, core checks static `channelWebhookPlugins`.
+If neither is configured, core returns `404` with `error.code = "NOT_FOUND"`.
 
 ## Injection Model
 
@@ -43,6 +44,27 @@ Router boot supports runtime registry injection:
   - Uses caller-provided registry.
 
 This allows external crates to register channel adapters and compose the runtime without modifying core dispatch code.
+
+## Static Plugin Bridge
+
+Core can proxy unknown channel webhook routes to external plugin daemons:
+
+```toml
+[channelWebhookPlugins.extchat]
+url = "http://127.0.0.1:4801/webhook"
+token = "replace-me" # optional; sent as x-reclaw-plugin-token
+timeoutMs = 10000
+```
+
+Bridge behavior:
+
+- Incoming webhook payload body is forwarded as-is (`application/json`).
+- Incoming headers are forwarded (except host/content-length and reserved reclaw bridge headers).
+- Core adds:
+  - `x-reclaw-channel: <channel>`
+  - `x-reclaw-plugin-token: <token>` when configured.
+- Plugin response status and JSON body are passed through to caller.
+- Non-JSON plugin responses are rejected with `502 BAD_GATEWAY`.
 
 ## Adapter Rules
 

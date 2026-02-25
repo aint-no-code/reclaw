@@ -51,7 +51,10 @@ Scope compared: `openclaw/src/gateway/**` and `openclaw/src/channels/plugins/**`
   - `src/gateway/server-plugins.ts`
   - `src/gateway/server-channels.ts`
 - Current Rust status:
-  - No plugin loader/runtime, no plugin-owned HTTP route dispatch, no plugin account lifecycle.
+  - Core supports plugin-owned webhook route dispatch via static `channelWebhookPlugins`
+    HTTP bridge fallback on `POST /channels/{channel}/webhook`.
+  - In-process registry injection remains supported for compiled adapters.
+  - Plugin account lifecycle and dynamic process/plugin loader parity are still not implemented.
 
 ## P1 (high-impact platform parity)
 
@@ -105,6 +108,6 @@ Scope compared: `openclaw/src/gateway/**` and `openclaw/src/channels/plugins/**`
 
 1. Hooks advanced mapping parity (`/hooks/*`) + conformance tests.
 2. Agent runtime upgrade (replace echo path with real execution + stream events).
-3. Channel plugin runtime abstraction and plugin HTTP bridge.
+3. Channel plugin runtime abstraction and plugin account/process lifecycle.
 4. Control UI/canvas compatibility surfaces.
 5. Advanced OpenResponses media/tool parity.

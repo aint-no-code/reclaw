@@ -1,4 +1,5 @@
 use std::{
+    collections::BTreeMap,
     fs,
     net::{IpAddr, Ipv4Addr, SocketAddr},
     path::{Path, PathBuf},
@@ -22,6 +23,8 @@ const DEFAULT_LOG_FILTER: &str = "info";
 const DEFAULT_JSON_LOGS: bool = false;
 const DEFAULT_HOOKS_PATH: &str = "/hooks";
 const DEFAULT_HOOKS_MAX_BODY_BYTES: usize = 256 * 1024;
+const DEFAULT_CHANNEL_WEBHOOK_PLUGIN_TIMEOUT_MS: u64 = 10_000;
+const MAX_CHANNEL_WEBHOOK_PLUGIN_TIMEOUT_MS: u64 = 120_000;
 
 #[derive(Debug, Clone, Parser)]
 #[command(
@@ -239,6 +242,16 @@ pub struct HookMappingTransformConfig {
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
+pub struct ChannelWebhookPluginConfig {
+    pub url: String,
+    #[serde(default)]
+    pub token: Option<String>,
+    #[serde(default)]
+    pub timeout_ms: Option<u64>,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
 pub struct HookMappingConfig {
     #[serde(default)]
     pub id: Option<String>,
@@ -291,6 +304,7 @@ pub struct RuntimeConfig {
     pub whatsapp_webhook_token: Option<String>,
     pub whatsapp_outbound_url: Option<String>,
     pub whatsapp_outbound_token: Option<String>,
+    pub channel_webhook_plugins: BTreeMap<String, ChannelWebhookPluginConfig>,
     pub hooks_enabled: bool,
     pub hooks_token: Option<String>,
     pub hooks_path: String,
@@ -451,6 +465,9 @@ impl RuntimeConfig {
             args.whatsapp_outbound_token
                 .or(static_config.whatsapp_outbound_token),
         );
+        let channel_webhook_plugins = normalize_channel_webhook_plugins(
+            static_config.channel_webhook_plugins.unwrap_or_default(),
+        )?;
         let hooks_enabled = args
             .hooks_enabled
             .or(static_config.hooks_enabled)
@@ -549,6 +566,7 @@ impl RuntimeConfig {
             whatsapp_webhook_token,
             whatsapp_outbound_url,
             whatsapp_outbound_token,
+            channel_webhook_plugins,
             hooks_enabled,
             hooks_token,
             hooks_path,
@@ -603,6 +621,7 @@ impl RuntimeConfig {
             whatsapp_webhook_token: None,
             whatsapp_outbound_url: None,
             whatsapp_outbound_token: None,
+            channel_webhook_plugins: BTreeMap::new(),
             hooks_enabled: false,
             hooks_token: None,
             hooks_path: DEFAULT_HOOKS_PATH.to_owned(),
@@ -654,6 +673,7 @@ struct StaticConfigValues {
     whatsapp_webhook_token: Option<String>,
     whatsapp_outbound_url: Option<String>,
     whatsapp_outbound_token: Option<String>,
+    channel_webhook_plugins: Option<BTreeMap<String, ChannelWebhookPluginConfig>>,
     hooks_enabled: Option<bool>,
     hooks_token: Option<String>,
     hooks_path: Option<String>,
@@ -716,6 +736,10 @@ impl StaticConfigValues {
         override_option(
             &mut self.whatsapp_outbound_token,
             other.whatsapp_outbound_token,
+        );
+        override_option(
+            &mut self.channel_webhook_plugins,
+            other.channel_webhook_plugins,
         );
         override_option(&mut self.hooks_enabled, other.hooks_enabled);
         override_option(&mut self.hooks_token, other.hooks_token);
@@ -855,6 +879,73 @@ fn normalize_non_empty(input: Option<String>) -> Option<String> {
             Some(trimmed.to_owned())
         }
     })
+}
+
+fn normalize_channel_webhook_plugins(
+    raw: BTreeMap<String, ChannelWebhookPluginConfig>,
+) -> Result<BTreeMap<String, ChannelWebhookPluginConfig>, String> {
+    let mut normalized = BTreeMap::new();
+    for (channel, config) in raw {
+        let channel_key = normalize_channel_plugin_key(&channel).ok_or_else(|| {
+            format!("channelWebhookPlugins key must contain only [a-z0-9._-]: {channel}")
+        })?;
+        if normalized.contains_key(&channel_key) {
+            return Err(format!(
+                "duplicate channelWebhookPlugins entry after normalization: {channel_key}"
+            ));
+        }
+
+        let url = normalize_non_empty(Some(config.url))
+            .ok_or_else(|| format!("channelWebhookPlugins.{channel_key}.url is required"))?;
+        let parsed_url = reqwest::Url::parse(&url).map_err(|error| {
+            format!("channelWebhookPlugins.{channel_key}.url is invalid: {error}")
+        })?;
+        if parsed_url.scheme() != "http" && parsed_url.scheme() != "https" {
+            return Err(format!(
+                "channelWebhookPlugins.{channel_key}.url must use http or https"
+            ));
+        }
+
+        let timeout_ms = match config.timeout_ms {
+            Some(0) => {
+                return Err(format!(
+                    "channelWebhookPlugins.{channel_key}.timeoutMs must be greater than 0"
+                ));
+            }
+            Some(value) if value > MAX_CHANNEL_WEBHOOK_PLUGIN_TIMEOUT_MS => {
+                return Err(format!(
+                    "channelWebhookPlugins.{channel_key}.timeoutMs must be <= {MAX_CHANNEL_WEBHOOK_PLUGIN_TIMEOUT_MS}"
+                ));
+            }
+            Some(value) => value,
+            None => DEFAULT_CHANNEL_WEBHOOK_PLUGIN_TIMEOUT_MS,
+        };
+
+        normalized.insert(
+            channel_key,
+            ChannelWebhookPluginConfig {
+                url,
+                token: normalize_non_empty(config.token),
+                timeout_ms: Some(timeout_ms),
+            },
+        );
+    }
+
+    Ok(normalized)
+}
+
+fn normalize_channel_plugin_key(input: &str) -> Option<String> {
+    let normalized = input.trim().to_ascii_lowercase();
+    if normalized.is_empty() {
+        return None;
+    }
+    if normalized.chars().all(|ch| {
+        ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '-' || ch == '_' || ch == '.'
+    }) {
+        Some(normalized)
+    } else {
+        None
+    }
 }
 
 fn normalize_hooks_path(input: String) -> Result<String, String> {
@@ -1116,6 +1207,36 @@ mod tests {
             runtime.whatsapp_outbound_url.as_deref(),
             Some("https://relay.example/whatsapp")
         );
+    }
+
+    #[test]
+    fn runtime_config_supports_channel_webhook_plugins() {
+        let temp_dir = tempfile::tempdir().expect("temp dir should be created");
+        let config_path = temp_dir.path().join("config.toml");
+        fs::write(
+            &config_path,
+            "[channelWebhookPlugins.extchat]\nurl = \"http://127.0.0.1:4900/webhook\"\ntoken = \"plugin-token\"\ntimeoutMs = 2500\n[channelWebhookPlugins.\"Bridge.Chat\"]\nurl = \"https://plugins.example/bridge\"\n",
+        )
+        .expect("config should write");
+
+        let mut args = empty_args();
+        args.config = Some(config_path);
+
+        let runtime = RuntimeConfig::from_args(args).expect("runtime config should build");
+        assert_eq!(runtime.channel_webhook_plugins.len(), 2);
+        let extchat = runtime
+            .channel_webhook_plugins
+            .get("extchat")
+            .expect("extchat config should exist");
+        assert_eq!(extchat.url, "http://127.0.0.1:4900/webhook");
+        assert_eq!(extchat.token.as_deref(), Some("plugin-token"));
+        assert_eq!(extchat.timeout_ms, Some(2500));
+        let bridge = runtime
+            .channel_webhook_plugins
+            .get("bridge.chat")
+            .expect("bridge.chat config should exist");
+        assert_eq!(bridge.url, "https://plugins.example/bridge");
+        assert_eq!(bridge.timeout_ms, Some(10_000));
     }
 
     #[test]
