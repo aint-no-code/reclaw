@@ -180,7 +180,7 @@ pub async fn handle_history(
 }
 
 pub async fn handle_abort(
-    _state: &SharedState,
+    state: &SharedState,
     params: Option<&Value>,
 ) -> Result<Value, crate::protocol::ErrorShape> {
     let parsed: ChatAbortParams = parse_optional_params("chat.abort", params)?;
@@ -189,12 +189,71 @@ pub async fn handle_abort(
         .or(parsed.session_id)
         .and_then(trim_non_empty)
         .unwrap_or_else(|| "agent:main:main".to_owned());
+    let Some(run_id) = parsed.run_id.and_then(trim_non_empty) else {
+        return Ok(json!({
+            "ok": true,
+            "aborted": false,
+            "sessionKey": session_key,
+            "runIds": Vec::<String>::new(),
+        }));
+    };
+
+    let Some(mut run) = state
+        .get_agent_run(&run_id)
+        .await
+        .map_err(map_domain_error)?
+    else {
+        return Ok(json!({
+            "ok": true,
+            "aborted": false,
+            "sessionKey": session_key,
+            "runIds": vec![run_id],
+        }));
+    };
+
+    if run
+        .session_key
+        .as_deref()
+        .is_some_and(|existing| existing != session_key)
+    {
+        return Err(crate::protocol::ErrorShape::new(
+            crate::protocol::ERROR_INVALID_REQUEST,
+            "invalid chat.abort params: runId does not belong to sessionKey",
+        ));
+    }
+
+    let already_terminal =
+        run.status == "completed" || run.status == "error" || run.status == "aborted";
+    if already_terminal {
+        return Ok(json!({
+            "ok": true,
+            "aborted": false,
+            "sessionKey": session_key,
+            "runIds": vec![run_id],
+        }));
+    }
+
+    let aborted_at = now_unix_ms();
+    run.status = "aborted".to_owned();
+    run.updated_at_ms = aborted_at;
+    run.completed_at_ms = Some(aborted_at);
+    if run.output.trim().is_empty() {
+        run.output = "aborted by chat.abort".to_owned();
+    }
+    if let Some(metadata) = run.metadata.as_object_mut() {
+        metadata.insert("abortedBy".to_owned(), Value::from("chat.abort"));
+        metadata.insert("abortedAtMs".to_owned(), Value::from(aborted_at));
+    }
+    state
+        .upsert_agent_run(&run)
+        .await
+        .map_err(map_domain_error)?;
 
     Ok(json!({
         "ok": true,
-        "aborted": false,
+        "aborted": true,
         "sessionKey": session_key,
-        "runIds": parsed.run_id.into_iter().collect::<Vec<_>>(),
+        "runIds": vec![run_id],
     }))
 }
 
