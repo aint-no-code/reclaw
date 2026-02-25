@@ -184,7 +184,15 @@ dbPath = \"{}\"\n\
 \n\
 # Set only one of gatewayToken or gatewayPassword.\n\
 # gatewayToken = \"replace-me\"\n\
-# gatewayPassword = \"replace-me\"\n",
+# gatewayPassword = \"replace-me\"\n\
+\n\
+# Optional bearer token for /channels/inbound (recommended when exposed).\n\
+# channelsInboundToken = \"replace-me\"\n\
+\n\
+# Telegram webhook integration (optional).\n\
+# telegramWebhookSecret = \"replace-me\"\n\
+# telegramBotToken = \"replace-me\"\n\
+# telegramApiBaseUrl = \"https://api.telegram.org\"\n",
         db_path.display()
     )
 }

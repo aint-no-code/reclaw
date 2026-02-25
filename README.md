@@ -73,5 +73,45 @@ cargo test --workspace --all-features
 - Health: `/healthz`
 - Readiness: `/readyz`
 - Info: `/info`
+- Channel ingress: `POST /channels/inbound`
+- Telegram webhook: `POST /channels/telegram/webhook`
 
 Handshake protocol version: `3`.
+
+## Messenger Integration
+
+### Generic Channel Bridge
+
+`/channels/inbound` lets external adapters (Telegram/Discord/Slack daemons) push messages into
+Reclaw Core sessions.
+
+Request body:
+
+```json
+{
+  "channel": "telegram",
+  "conversationId": "123456",
+  "text": "hello",
+  "agentId": "main",
+  "messageId": "m1"
+}
+```
+
+If `channelsInboundToken` is configured, send `Authorization: Bearer <token>`.
+
+### Telegram Webhook
+
+Set these config keys (or env vars):
+
+- `telegramWebhookSecret` / `RECLAW_TELEGRAM_WEBHOOK_SECRET`
+- `telegramBotToken` / `RECLAW_TELEGRAM_BOT_TOKEN` (optional for outbound replies)
+- `telegramApiBaseUrl` / `RECLAW_TELEGRAM_API_BASE_URL` (defaults to `https://api.telegram.org`)
+
+Send webhook updates to:
+
+- `POST /channels/telegram/webhook`
+- Header: `x-telegram-bot-api-secret-token: <telegramWebhookSecret>`
+
+Text updates are ingested into session keys shaped like:
+
+- `agent:main:telegram:chat:<chat_id>`
