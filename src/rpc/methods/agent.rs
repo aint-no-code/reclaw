@@ -86,6 +86,14 @@ pub async fn handle_agent(
         .and_then(trim_non_empty)
         .unwrap_or_else(|| "main".to_owned());
 
+    if let Some(existing) = state
+        .get_agent_run(&run_id)
+        .await
+        .map_err(map_domain_error)?
+    {
+        return resolve_existing_agent_run(existing, &session_key, &agent_id);
+    }
+
     let now = now_unix_ms();
     let output = format!("Echo: {input}");
 
@@ -142,6 +150,52 @@ pub async fn handle_agent(
         "result": {
             "output": output,
             "sessionKey": session_key,
+        },
+    }))
+}
+
+fn resolve_existing_agent_run(
+    existing: AgentRunRecord,
+    requested_session_key: &str,
+    requested_agent_id: &str,
+) -> Result<Value, crate::protocol::ErrorShape> {
+    if existing
+        .metadata
+        .get("source")
+        .and_then(Value::as_str)
+        .is_some_and(|source| source != "agent")
+    {
+        return Err(crate::protocol::ErrorShape::new(
+            crate::protocol::ERROR_INVALID_REQUEST,
+            "invalid agent params: runId is already used by another method",
+        ));
+    }
+
+    if existing.agent_id != requested_agent_id {
+        return Err(crate::protocol::ErrorShape::new(
+            crate::protocol::ERROR_INVALID_REQUEST,
+            "invalid agent params: runId is already used with a different agentId",
+        ));
+    }
+
+    if let Some(existing_session) = existing.session_key.as_deref()
+        && existing_session != requested_session_key
+    {
+        return Err(crate::protocol::ErrorShape::new(
+            crate::protocol::ERROR_INVALID_REQUEST,
+            "invalid agent params: runId is already used with a different sessionKey",
+        ));
+    }
+
+    Ok(json!({
+        "runId": existing.id,
+        "status": "ok",
+        "summary": existing.status,
+        "result": {
+            "output": existing.output,
+            "sessionKey": existing
+                .session_key
+                .unwrap_or_else(|| requested_session_key.to_owned()),
         },
     }))
 }

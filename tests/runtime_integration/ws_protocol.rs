@@ -180,6 +180,22 @@ async fn method_groups_round_trip() {
     .await;
     assert_eq!(send["ok"], true);
     assert_eq!(send["payload"]["status"], "completed");
+    assert_eq!(send["payload"]["runId"], "run-chat-1");
+
+    let send_duplicate = rpc_req(
+        &mut ws,
+        "chat-1b",
+        "chat.send",
+        Some(json!({
+            "sessionKey": "agent:main:main",
+            "message": "hello duplicate should be ignored",
+            "idempotencyKey": "run-chat-1"
+        })),
+    )
+    .await;
+    assert_eq!(send_duplicate["ok"], true);
+    assert_eq!(send_duplicate["payload"]["runId"], "run-chat-1");
+    assert_eq!(send_duplicate["payload"]["message"], "Echo: hello");
 
     let history = rpc_req(
         &mut ws,
@@ -192,7 +208,7 @@ async fn method_groups_round_trip() {
     assert!(
         history["payload"]["messages"]
             .as_array()
-            .is_some_and(|messages| messages.len() >= 2)
+            .is_some_and(|messages| messages.len() == 2)
     );
 
     let wait = rpc_req(
@@ -204,6 +220,50 @@ async fn method_groups_round_trip() {
     .await;
     assert_eq!(wait["ok"], true);
     assert_eq!(wait["payload"]["status"], "completed");
+
+    let agent_run = rpc_req(
+        &mut ws,
+        "agent-1b",
+        "agent",
+        Some(json!({
+            "runId": "run-agent-1",
+            "sessionKey": "agent:main:main",
+            "agentId": "main",
+            "input": "execute agent"
+        })),
+    )
+    .await;
+    assert_eq!(agent_run["ok"], true);
+    assert_eq!(agent_run["payload"]["runId"], "run-agent-1");
+
+    let agent_duplicate = rpc_req(
+        &mut ws,
+        "agent-1c",
+        "agent",
+        Some(json!({
+            "runId": "run-agent-1",
+            "sessionKey": "agent:main:main",
+            "agentId": "main",
+            "input": "this should be ignored"
+        })),
+    )
+    .await;
+    assert_eq!(agent_duplicate["ok"], true);
+    assert_eq!(agent_duplicate["payload"]["runId"], "run-agent-1");
+    assert_eq!(
+        agent_duplicate["payload"]["result"]["output"],
+        "Echo: execute agent"
+    );
+
+    let agent_wait = rpc_req(
+        &mut ws,
+        "agent-1d",
+        "agent.wait",
+        Some(json!({ "runId": "run-agent-1", "timeoutMs": 500 })),
+    )
+    .await;
+    assert_eq!(agent_wait["ok"], true);
+    assert_eq!(agent_wait["payload"]["status"], "completed");
 
     let add_job = rpc_req(
         &mut ws,
