@@ -46,6 +46,18 @@ pub struct Args {
     #[arg(long, env = "RECLAW_GATEWAY_PASSWORD")]
     pub gateway_password: Option<String>,
 
+    #[arg(long, env = "RECLAW_CHANNELS_INBOUND_TOKEN")]
+    pub channels_inbound_token: Option<String>,
+
+    #[arg(long, env = "RECLAW_TELEGRAM_WEBHOOK_SECRET")]
+    pub telegram_webhook_secret: Option<String>,
+
+    #[arg(long, env = "RECLAW_TELEGRAM_BOT_TOKEN")]
+    pub telegram_bot_token: Option<String>,
+
+    #[arg(long, env = "RECLAW_TELEGRAM_API_BASE_URL")]
+    pub telegram_api_base_url: Option<String>,
+
     #[arg(long, env = "RECLAW_MAX_PAYLOAD_BYTES")]
     pub max_payload_bytes: Option<usize>,
 
@@ -137,6 +149,10 @@ pub struct RuntimeConfig {
     pub host: IpAddr,
     pub port: u16,
     pub auth_mode: AuthMode,
+    pub channels_inbound_token: Option<String>,
+    pub telegram_webhook_secret: Option<String>,
+    pub telegram_bot_token: Option<String>,
+    pub telegram_api_base_url: String,
     pub max_payload_bytes: usize,
     pub max_buffered_bytes: usize,
     pub handshake_timeout: Duration,
@@ -225,6 +241,22 @@ impl RuntimeConfig {
             normalize_non_empty(args.runtime_version.or(static_config.runtime_version))
                 .unwrap_or_else(|| env!("CARGO_PKG_VERSION").to_owned());
 
+        let channels_inbound_token = normalize_non_empty(
+            args.channels_inbound_token
+                .or(static_config.channels_inbound_token),
+        );
+        let telegram_webhook_secret = normalize_non_empty(
+            args.telegram_webhook_secret
+                .or(static_config.telegram_webhook_secret),
+        );
+        let telegram_bot_token =
+            normalize_non_empty(args.telegram_bot_token.or(static_config.telegram_bot_token));
+        let telegram_api_base_url = normalize_non_empty(
+            args.telegram_api_base_url
+                .or(static_config.telegram_api_base_url),
+        )
+        .unwrap_or_else(|| "https://api.telegram.org".to_owned());
+
         let log_filter = normalize_non_empty(args.log_filter.or(static_config.log_filter))
             .unwrap_or_else(|| DEFAULT_LOG_FILTER.to_owned());
 
@@ -258,6 +290,10 @@ impl RuntimeConfig {
             host,
             port,
             auth_mode,
+            channels_inbound_token,
+            telegram_webhook_secret,
+            telegram_bot_token,
+            telegram_api_base_url,
             max_payload_bytes,
             max_buffered_bytes,
             handshake_timeout: Duration::from_millis(handshake_timeout_ms),
@@ -285,6 +321,10 @@ impl RuntimeConfig {
             host,
             port,
             auth_mode: AuthMode::None,
+            channels_inbound_token: None,
+            telegram_webhook_secret: None,
+            telegram_bot_token: None,
+            telegram_api_base_url: "https://api.telegram.org".to_owned(),
             max_payload_bytes: 512 * 1024,
             max_buffered_bytes: 1024 * 1024,
             handshake_timeout: Duration::from_millis(3_000),
@@ -309,6 +349,10 @@ struct StaticConfigValues {
     port: Option<u16>,
     gateway_token: Option<String>,
     gateway_password: Option<String>,
+    channels_inbound_token: Option<String>,
+    telegram_webhook_secret: Option<String>,
+    telegram_bot_token: Option<String>,
+    telegram_api_base_url: Option<String>,
     max_payload_bytes: Option<usize>,
     max_buffered_bytes: Option<usize>,
     handshake_timeout_ms: Option<u64>,
@@ -330,6 +374,16 @@ impl StaticConfigValues {
         override_option(&mut self.port, other.port);
         override_option(&mut self.gateway_token, other.gateway_token);
         override_option(&mut self.gateway_password, other.gateway_password);
+        override_option(
+            &mut self.channels_inbound_token,
+            other.channels_inbound_token,
+        );
+        override_option(
+            &mut self.telegram_webhook_secret,
+            other.telegram_webhook_secret,
+        );
+        override_option(&mut self.telegram_bot_token, other.telegram_bot_token);
+        override_option(&mut self.telegram_api_base_url, other.telegram_api_base_url);
         override_option(&mut self.max_payload_bytes, other.max_payload_bytes);
         override_option(&mut self.max_buffered_bytes, other.max_buffered_bytes);
         override_option(&mut self.handshake_timeout_ms, other.handshake_timeout_ms);
@@ -475,6 +529,10 @@ mod tests {
             port: None,
             gateway_token: None,
             gateway_password: None,
+            channels_inbound_token: None,
+            telegram_webhook_secret: None,
+            telegram_bot_token: None,
+            telegram_api_base_url: None,
             max_payload_bytes: None,
             max_buffered_bytes: None,
             handshake_timeout_ms: None,

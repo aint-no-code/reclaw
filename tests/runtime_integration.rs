@@ -28,6 +28,13 @@ impl ServerHandle {
 }
 
 async fn spawn_server(auth_mode: AuthMode) -> ServerHandle {
+    spawn_server_with(auth_mode, |_: &mut RuntimeConfig| {}).await
+}
+
+async fn spawn_server_with(
+    auth_mode: AuthMode,
+    configure: impl FnOnce(&mut RuntimeConfig),
+) -> ServerHandle {
     let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
         .await
         .expect("listener should bind");
@@ -40,6 +47,7 @@ async fn spawn_server(auth_mode: AuthMode) -> ServerHandle {
 
     let mut config = RuntimeConfig::for_test(IpAddr::V4(Ipv4Addr::LOCALHOST), addr.port(), db_path);
     config.auth_mode = auth_mode;
+    configure(&mut config);
 
     let (shutdown_tx, shutdown_rx) = oneshot::channel();
     let join = tokio::spawn(async move {
@@ -961,6 +969,87 @@ async fn extended_method_groups_round_trip() {
     .await;
     assert_eq!(browser["ok"], false);
     assert_eq!(browser["error"]["code"], "UNAVAILABLE");
+
+    server.stop().await;
+}
+
+#[tokio::test]
+async fn channels_inbound_requires_bearer_token_when_configured() {
+    let server = spawn_server_with(AuthMode::None, |config| {
+        config.channels_inbound_token = Some("bridge-token".to_owned());
+    })
+    .await;
+
+    let client = reqwest::Client::new();
+    let response = client
+        .post(format!("http://{}/channels/inbound", server.addr))
+        .json(&json!({
+            "channel": "telegram",
+            "conversationId": "chat-1",
+            "text": "hello",
+        }))
+        .send()
+        .await
+        .expect("inbound request should return");
+
+    assert_eq!(response.status(), reqwest::StatusCode::UNAUTHORIZED);
+    let payload: Value = response.json().await.expect("response should be json");
+    assert_eq!(payload["ok"], false);
+
+    server.stop().await;
+}
+
+#[tokio::test]
+async fn channels_inbound_routes_message_to_chat_session() {
+    let server = spawn_server_with(AuthMode::None, |config| {
+        config.channels_inbound_token = Some("bridge-token".to_owned());
+    })
+    .await;
+
+    let client = reqwest::Client::new();
+    let response = client
+        .post(format!("http://{}/channels/inbound", server.addr))
+        .bearer_auth("bridge-token")
+        .json(&json!({
+            "channel": "telegram",
+            "conversationId": "12345",
+            "text": "hello from channel",
+            "messageId": "m1"
+        }))
+        .send()
+        .await
+        .expect("inbound request should return");
+
+    assert!(response.status().is_success());
+    let payload: Value = response.json().await.expect("response should be json");
+    assert_eq!(payload["ok"], true);
+
+    let mut ws = connect_gateway(server.addr).await;
+    ws.send(Message::Text(
+        connect_frame(None, 1, PROTOCOL_VERSION, "operator", "reclaw-test", &[])
+            .to_string()
+            .into(),
+    ))
+    .await
+    .expect("connect frame should send");
+    let _ = recv_json(&mut ws).await;
+
+    let history = rpc_req(
+        &mut ws,
+        "inbound-1",
+        "chat.history",
+        Some(json!({
+            "sessionKey": "agent:main:telegram:chat:12345",
+            "limit": 20
+        })),
+    )
+    .await;
+    assert_eq!(history["ok"], true);
+    assert!(
+        history["payload"]["messages"]
+            .as_array()
+            .is_some_and(|messages| messages.len() >= 2)
+    );
 
     server.stop().await;
 }

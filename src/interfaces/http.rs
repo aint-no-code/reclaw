@@ -1,5 +1,6 @@
 use std::{future::Future, net::SocketAddr};
 
+use axum::routing::post;
 use axum::{Json, Router, extract::State, http::StatusCode, response::IntoResponse, routing::get};
 use tokio::net::TcpListener;
 use tracing::info;
@@ -7,7 +8,7 @@ use tracing::info;
 use crate::{
     application::state::SharedState,
     domain::error::DomainError,
-    interfaces::ws,
+    interfaces::{channels, ws},
     rpc::methods::{health, status},
 };
 
@@ -18,6 +19,7 @@ pub fn build_router(state: SharedState) -> Router {
         .route("/healthz", get(healthz_handler))
         .route("/readyz", get(readyz_handler))
         .route("/info", get(info_handler))
+        .route("/channels/inbound", post(channels::inbound_handler))
         .with_state(state)
 }
 
