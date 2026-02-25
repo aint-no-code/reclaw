@@ -5,6 +5,7 @@
 ## Specs
 
 - Architecture: `docs/spec/architecture.md`
+- Channel adapters: `docs/spec/channel-adapters.md`
 - Storage: `docs/spec/storage.md`
 - Method contracts: `docs/spec/methods.md`
 
