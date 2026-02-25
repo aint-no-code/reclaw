@@ -74,7 +74,10 @@ cargo test --workspace --all-features
 - Readiness: `/readyz`
 - Info: `/info`
 - Channel ingress: `POST /channels/inbound`
+- Channel-specific ingress: `POST /channels/{channel}/inbound`
 - Telegram webhook: `POST /channels/telegram/webhook`
+- OpenAI chat completions: `POST /v1/chat/completions` (disabled by default)
+- OpenResponses: `POST /v1/responses` (disabled by default)
 
 Handshake protocol version: `3`.
 
@@ -115,3 +118,16 @@ Send webhook updates to:
 Text updates are ingested into session keys shaped like:
 
 - `agent:main:telegram:chat:<chat_id>`
+
+## LLM Compatibility Endpoints
+
+These HTTP endpoints are compatible with OpenClaw gateway behavior and are disabled by default.
+
+Enable with static config or env:
+
+- `openaiChatCompletionsEnabled = true` or `RECLAW_OPENAI_CHAT_COMPLETIONS_ENABLED=true`
+- `openresponsesEnabled = true` or `RECLAW_OPENRESPONSES_ENABLED=true`
+
+Both routes use the gateway auth mode (`gatewayToken` or `gatewayPassword`) and expect:
+
+- `Authorization: Bearer <secret>`

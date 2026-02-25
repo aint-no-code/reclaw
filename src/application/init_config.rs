@@ -192,7 +192,11 @@ dbPath = \"{}\"\n\
 # Telegram webhook integration (optional).\n\
 # telegramWebhookSecret = \"replace-me\"\n\
 # telegramBotToken = \"replace-me\"\n\
-# telegramApiBaseUrl = \"https://api.telegram.org\"\n",
+# telegramApiBaseUrl = \"https://api.telegram.org\"\n\
+\n\
+# HTTP compatibility endpoints (disabled by default).\n\
+# openaiChatCompletionsEnabled = true\n\
+# openresponsesEnabled = true\n",
         db_path.display()
     )
 }

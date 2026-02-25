@@ -13,7 +13,7 @@ use crate::{
 };
 
 pub fn build_router(state: SharedState) -> Router {
-    Router::new()
+    let mut router = Router::new()
         .route("/", get(ws::ws_handler))
         .route("/ws", get(ws::ws_handler))
         .route("/healthz", get(healthz_handler))
@@ -27,13 +27,20 @@ pub fn build_router(state: SharedState) -> Router {
         .route(
             "/channels/telegram/webhook",
             post(telegram::webhook_handler),
-        )
-        .route(
+        );
+
+    if state.config().openai_chat_completions_enabled {
+        router = router.route(
             "/v1/chat/completions",
             post(openai::chat_completions_handler),
-        )
-        .route("/v1/responses", post(openresponses::responses_handler))
-        .with_state(state)
+        );
+    }
+
+    if state.config().openresponses_enabled {
+        router = router.route("/v1/responses", post(openresponses::responses_handler));
+    }
+
+    router.with_state(state)
 }
 
 pub async fn serve(

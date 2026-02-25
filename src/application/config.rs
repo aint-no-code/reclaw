@@ -58,6 +58,12 @@ pub struct Args {
     #[arg(long, env = "RECLAW_TELEGRAM_API_BASE_URL")]
     pub telegram_api_base_url: Option<String>,
 
+    #[arg(long, env = "RECLAW_OPENAI_CHAT_COMPLETIONS_ENABLED")]
+    pub openai_chat_completions_enabled: Option<bool>,
+
+    #[arg(long, env = "RECLAW_OPENRESPONSES_ENABLED")]
+    pub openresponses_enabled: Option<bool>,
+
     #[arg(long, env = "RECLAW_MAX_PAYLOAD_BYTES")]
     pub max_payload_bytes: Option<usize>,
 
@@ -153,6 +159,8 @@ pub struct RuntimeConfig {
     pub telegram_webhook_secret: Option<String>,
     pub telegram_bot_token: Option<String>,
     pub telegram_api_base_url: String,
+    pub openai_chat_completions_enabled: bool,
+    pub openresponses_enabled: bool,
     pub max_payload_bytes: usize,
     pub max_buffered_bytes: usize,
     pub handshake_timeout: Duration,
@@ -256,6 +264,14 @@ impl RuntimeConfig {
                 .or(static_config.telegram_api_base_url),
         )
         .unwrap_or_else(|| "https://api.telegram.org".to_owned());
+        let openai_chat_completions_enabled = args
+            .openai_chat_completions_enabled
+            .or(static_config.openai_chat_completions_enabled)
+            .unwrap_or(false);
+        let openresponses_enabled = args
+            .openresponses_enabled
+            .or(static_config.openresponses_enabled)
+            .unwrap_or(false);
 
         let log_filter = normalize_non_empty(args.log_filter.or(static_config.log_filter))
             .unwrap_or_else(|| DEFAULT_LOG_FILTER.to_owned());
@@ -294,6 +310,8 @@ impl RuntimeConfig {
             telegram_webhook_secret,
             telegram_bot_token,
             telegram_api_base_url,
+            openai_chat_completions_enabled,
+            openresponses_enabled,
             max_payload_bytes,
             max_buffered_bytes,
             handshake_timeout: Duration::from_millis(handshake_timeout_ms),
@@ -325,6 +343,8 @@ impl RuntimeConfig {
             telegram_webhook_secret: None,
             telegram_bot_token: None,
             telegram_api_base_url: "https://api.telegram.org".to_owned(),
+            openai_chat_completions_enabled: false,
+            openresponses_enabled: false,
             max_payload_bytes: 512 * 1024,
             max_buffered_bytes: 1024 * 1024,
             handshake_timeout: Duration::from_millis(3_000),
@@ -353,6 +373,8 @@ struct StaticConfigValues {
     telegram_webhook_secret: Option<String>,
     telegram_bot_token: Option<String>,
     telegram_api_base_url: Option<String>,
+    openai_chat_completions_enabled: Option<bool>,
+    openresponses_enabled: Option<bool>,
     max_payload_bytes: Option<usize>,
     max_buffered_bytes: Option<usize>,
     handshake_timeout_ms: Option<u64>,
@@ -384,6 +406,11 @@ impl StaticConfigValues {
         );
         override_option(&mut self.telegram_bot_token, other.telegram_bot_token);
         override_option(&mut self.telegram_api_base_url, other.telegram_api_base_url);
+        override_option(
+            &mut self.openai_chat_completions_enabled,
+            other.openai_chat_completions_enabled,
+        );
+        override_option(&mut self.openresponses_enabled, other.openresponses_enabled);
         override_option(&mut self.max_payload_bytes, other.max_payload_bytes);
         override_option(&mut self.max_buffered_bytes, other.max_buffered_bytes);
         override_option(&mut self.handshake_timeout_ms, other.handshake_timeout_ms);
@@ -533,6 +560,8 @@ mod tests {
             telegram_webhook_secret: None,
             telegram_bot_token: None,
             telegram_api_base_url: None,
+            openai_chat_completions_enabled: None,
+            openresponses_enabled: None,
             max_payload_bytes: None,
             max_buffered_bytes: None,
             handshake_timeout_ms: None,
@@ -632,6 +661,25 @@ mod tests {
 
         let runtime = RuntimeConfig::from_args(args).expect("runtime config should build");
         assert_eq!(runtime.port, 20000);
+    }
+
+    #[test]
+    fn runtime_config_supports_http_compat_endpoint_toggles() {
+        let temp_dir = tempfile::tempdir().expect("temp dir should be created");
+        let config_path = temp_dir.path().join("config.toml");
+        fs::write(
+            &config_path,
+            "openaiChatCompletionsEnabled = true\nopenresponsesEnabled = true\n",
+        )
+        .expect("config should write");
+
+        let mut args = empty_args();
+        args.config = Some(config_path);
+        args.openresponses_enabled = Some(false);
+
+        let runtime = RuntimeConfig::from_args(args).expect("runtime config should build");
+        assert!(runtime.openai_chat_completions_enabled);
+        assert!(!runtime.openresponses_enabled);
     }
 
     #[test]
