@@ -94,5 +94,9 @@ Rules:
 - `matchSource` filters on payload `source`
 - `action = "agent"` requires `message` or `messageTemplate`
 - `action = "wake"` requires `text` or `textTemplate`
-- `messageTemplate` / `textTemplate` support `{{path}}` interpolation from payload JSON
+- `messageTemplate` / `textTemplate` support interpolation from:
+  - payload (`{{repo}}`, `{{actor.name}}`, `{{commits[0].id}}`)
+  - headers (`{{headers.user-agent}}`)
+  - query params (`{{query.kind}}`)
+  - request subpath (`{{path}}`)
 - mapping-provided `sessionKey` is allowed regardless of `hooksAllowRequestSessionKey`

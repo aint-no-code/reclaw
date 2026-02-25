@@ -92,6 +92,13 @@ enum HookSessionKeySource {
     Mapping,
 }
 
+struct HookTemplateContext<'a> {
+    payload: &'a Map<String, Value>,
+    headers: &'a Map<String, Value>,
+    path: &'a str,
+    query: &'a Map<String, Value>,
+}
+
 pub async fn root_handler(
     State(state): State<SharedState>,
     ConnectInfo(remote_addr): ConnectInfo<SocketAddr>,
@@ -115,6 +122,8 @@ async fn handle_request(
     subpath: String,
     request: Request,
 ) -> (StatusCode, Json<Value>) {
+    let request_uri = request.uri().clone();
+    let request_headers = request.headers().clone();
     if request.method() != Method::POST {
         return error_response(
             StatusCode::METHOD_NOT_ALLOWED,
@@ -123,7 +132,7 @@ async fn handle_request(
         );
     }
 
-    if has_token_query(request.uri()) {
+    if has_token_query(&request_uri) {
         return error_response(
             StatusCode::BAD_REQUEST,
             "INVALID_REQUEST",
@@ -131,7 +140,7 @@ async fn handle_request(
         );
     }
 
-    if let Err(response) = authorize_request(&state, request.headers(), remote_addr).await {
+    if let Err(response) = authorize_request(&state, &request_headers, remote_addr).await {
         return response;
     }
 
@@ -165,6 +174,14 @@ async fn handle_request(
     if normalized_subpath.is_empty() {
         return error_response(StatusCode::NOT_FOUND, "NOT_FOUND", "not found");
     }
+    let normalized_headers = normalize_hook_headers(&request_headers);
+    let query_values = parse_query_values(&request_uri);
+    let template_context = HookTemplateContext {
+        payload: &payload,
+        headers: &normalized_headers,
+        path: normalized_subpath,
+        query: &query_values,
+    };
 
     match normalized_subpath {
         "wake" => {
@@ -189,7 +206,7 @@ async fn handle_request(
             let Some(mapped) = resolve_mapping(&state, normalized_subpath, &payload) else {
                 return error_response(StatusCode::NOT_FOUND, "NOT_FOUND", "not found");
             };
-            dispatch_mapping(state, mapped, &payload).await
+            dispatch_mapping(state, mapped, &template_context).await
         }
     }
 }
@@ -338,11 +355,11 @@ async fn dispatch_agent(
 async fn dispatch_mapping(
     state: SharedState,
     mapping: HookMappingConfig,
-    payload: &Map<String, Value>,
+    context: &HookTemplateContext<'_>,
 ) -> (StatusCode, Json<Value>) {
     match mapping.action {
         HookMappingAction::Wake => {
-            let text = trim_non_empty(resolve_mapped_text(&mapping, payload))
+            let text = trim_non_empty(resolve_mapped_text(&mapping, context))
                 .ok_or_else(|| "hook mapping requires text".to_owned());
             let text = match text {
                 Ok(value) => value,
@@ -357,7 +374,7 @@ async fn dispatch_mapping(
             dispatch_wake(state, wake).await
         }
         HookMappingAction::Agent => {
-            let message = trim_non_empty(resolve_mapped_message(&mapping, payload))
+            let message = trim_non_empty(resolve_mapped_message(&mapping, context))
                 .ok_or_else(|| "hook mapping requires message".to_owned());
             let message = match message {
                 Ok(value) => value,
@@ -421,25 +438,25 @@ fn normalize_mapping_path(path: &str) -> String {
 
 fn resolve_mapped_text(
     mapping: &HookMappingConfig,
-    payload: &Map<String, Value>,
+    context: &HookTemplateContext<'_>,
 ) -> Option<String> {
     if let Some(template) = trim_non_empty(mapping.text_template.clone()) {
-        return Some(render_template(&template, payload));
+        return Some(render_template(&template, context));
     }
     mapping.text.clone()
 }
 
 fn resolve_mapped_message(
     mapping: &HookMappingConfig,
-    payload: &Map<String, Value>,
+    context: &HookTemplateContext<'_>,
 ) -> Option<String> {
     if let Some(template) = trim_non_empty(mapping.message_template.clone()) {
-        return Some(render_template(&template, payload));
+        return Some(render_template(&template, context));
     }
     mapping.message.clone()
 }
 
-fn render_template(template: &str, payload: &Map<String, Value>) -> String {
+fn render_template(template: &str, context: &HookTemplateContext<'_>) -> String {
     let mut out = String::new();
     let mut cursor = 0usize;
     while let Some(open_rel) = template[cursor..].find("{{") {
@@ -452,14 +469,28 @@ fn render_template(template: &str, payload: &Map<String, Value>) -> String {
         };
         let close = value_start + close_rel;
         let expr = template[value_start..close].trim();
-        out.push_str(&resolve_template_expr(payload, expr));
+        out.push_str(&resolve_template_expr(context, expr));
         cursor = close + 2;
     }
     out.push_str(&template[cursor..]);
     out
 }
 
-fn resolve_template_expr(payload: &Map<String, Value>, expr: &str) -> String {
+fn resolve_template_expr(context: &HookTemplateContext<'_>, expr: &str) -> String {
+    if expr == "path" {
+        return context.path.to_owned();
+    }
+
+    let (source, expr) = if let Some(rest) = expr.strip_prefix("payload.") {
+        (context.payload, rest)
+    } else if let Some(rest) = expr.strip_prefix("headers.") {
+        (context.headers, rest)
+    } else if let Some(rest) = expr.strip_prefix("query.") {
+        (context.query, rest)
+    } else {
+        (context.payload, expr)
+    };
+
     let segments = parse_template_segments(expr);
     let mut segments_iter = segments.into_iter();
     let Some(first) = segments_iter.next() else {
@@ -467,7 +498,7 @@ fn resolve_template_expr(payload: &Map<String, Value>, expr: &str) -> String {
     };
 
     let mut cursor = match first {
-        TemplateSegment::Key(key) => payload.get(&key),
+        TemplateSegment::Key(key) => source.get(&key),
         TemplateSegment::Index(_) => None,
     };
 
@@ -590,6 +621,38 @@ fn hook_session(client_id: &str) -> SessionContext {
     }
 }
 
+fn normalize_hook_headers(headers: &HeaderMap) -> Map<String, Value> {
+    let mut normalized = Map::new();
+    for (name, value) in headers {
+        let Ok(text) = value.to_str() else {
+            continue;
+        };
+        normalized.insert(
+            name.as_str().to_ascii_lowercase(),
+            Value::String(text.to_owned()),
+        );
+    }
+    normalized
+}
+
+fn parse_query_values(uri: &Uri) -> Map<String, Value> {
+    let mut query_values = Map::new();
+    let Some(query) = uri.query() else {
+        return query_values;
+    };
+
+    for pair in query.split('&') {
+        let mut parts = pair.splitn(2, '=');
+        let key = parts.next().map(str::trim).unwrap_or_default();
+        if key.is_empty() {
+            continue;
+        }
+        let value = parts.next().map(str::trim).unwrap_or_default();
+        query_values.insert(key.to_owned(), Value::String(value.to_owned()));
+    }
+    query_values
+}
+
 fn has_token_query(uri: &Uri) -> bool {
     uri.query().is_some_and(|query| {
         query.split('&').any(|entry| {
@@ -675,8 +738,8 @@ fn error_response(
 #[cfg(test)]
 mod tests {
     use super::{
-        HOOKS_SESSION_POLICY_ERROR, HookSessionKeySource, has_token_query, normalize_mapping_path,
-        render_template, resolve_session_key_policy,
+        HOOKS_SESSION_POLICY_ERROR, HookSessionKeySource, HookTemplateContext, has_token_query,
+        normalize_mapping_path, render_template, resolve_session_key_policy,
     };
     use crate::application::config::RuntimeConfig;
 
@@ -719,10 +782,47 @@ mod tests {
             "commits": [{ "id": "c1" }]
         });
         let payload = payload.as_object().cloned().unwrap_or_default();
+        let headers = serde_json::Map::new();
+        let query = serde_json::Map::new();
+        let context = HookTemplateContext {
+            payload: &payload,
+            headers: &headers,
+            path: "github/push",
+            query: &query,
+        };
         let rendered = render_template(
             "repo={{repo}} actor={{actor.name}} first={{commits[0].id}}",
-            &payload,
+            &context,
         );
         assert_eq!(rendered, "repo=reclaw actor=jd first=c1");
+    }
+
+    #[test]
+    fn render_template_supports_headers_query_and_path_contexts() {
+        let payload = serde_json::Map::new();
+        let headers = serde_json::json!({
+            "user-agent": "reclaw-test",
+        })
+        .as_object()
+        .cloned()
+        .unwrap_or_default();
+        let query = serde_json::json!({
+            "kind": "push",
+        })
+        .as_object()
+        .cloned()
+        .unwrap_or_default();
+        let context = HookTemplateContext {
+            payload: &payload,
+            headers: &headers,
+            path: "github/template",
+            query: &query,
+        };
+
+        let rendered = render_template(
+            "ua={{headers.user-agent}} kind={{query.kind}} path={{path}}",
+            &context,
+        );
+        assert_eq!(rendered, "ua=reclaw-test kind=push path=github/template");
     }
 }

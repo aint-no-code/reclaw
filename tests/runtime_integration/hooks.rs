@@ -460,3 +460,52 @@ async fn hooks_mapping_renders_message_template_from_payload() {
 
     server.stop().await;
 }
+
+#[tokio::test]
+async fn hooks_mapping_renders_header_query_and_path_context() {
+    let server = spawn_server_with(AuthMode::None, |config| {
+        config.hooks_enabled = true;
+        config.hooks_token = Some("hooks-token".to_owned());
+        config.hooks_mappings = vec![HookMappingConfig {
+            id: Some("context".to_owned()),
+            path: "context/run".to_owned(),
+            action: HookMappingAction::Agent,
+            match_source: None,
+            wake_mode: None,
+            text: None,
+            text_template: None,
+            message: None,
+            message_template: Some(
+                "ua={{headers.user-agent}} kind={{query.kind}} path={{path}}".to_owned(),
+            ),
+            name: None,
+            agent_id: None,
+            session_key: Some("hook:context".to_owned()),
+        }];
+    })
+    .await;
+
+    let client = reqwest::Client::new();
+    let response = client
+        .post(format!(
+            "http://{}/hooks/context/run?kind=push",
+            server.addr
+        ))
+        .bearer_auth("hooks-token")
+        .header("User-Agent", "reclaw-test/1")
+        .json(&json!({}))
+        .send()
+        .await
+        .expect("hooks request should return");
+
+    assert_eq!(response.status(), reqwest::StatusCode::ACCEPTED);
+
+    let history_texts = session_history_texts(server.addr, "hook:context").await;
+    assert!(
+        history_texts
+            .iter()
+            .any(|text| text.contains("ua=reclaw-test/1 kind=push path=context/run"))
+    );
+
+    server.stop().await;
+}
