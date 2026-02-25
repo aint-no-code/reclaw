@@ -216,6 +216,7 @@ dbPath = \"{}\"\n\
 # hooksAllowRequestSessionKey = false\n\
 # hooksDefaultSessionKey = \"hook:default\"\n\
 # hooksDefaultAgentId = \"main\"\n\
+# hooksTransformsDir = \"./hooks/transforms\"\n\
 # [[hooksMappings]]\n\
 # path = \"github/push\"\n\
 # action = \"agent\" # or \"wake\"\n\
@@ -224,6 +225,9 @@ dbPath = \"{}\"\n\
 # messageTemplate = \"Repo {{repo}} update\"\n\
 # sessionKey = \"hook:github\"\n\
 # agentId = \"main\"\n\
+# [hooksMappings.transform]\n\
+# module = \"github-transform.mjs\"\n\
+# export = \"transform\"\n\
 \n\
 # HTTP compatibility endpoints (disabled by default).\n\
 # openaiChatCompletionsEnabled = true\n\

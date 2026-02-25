@@ -123,6 +123,9 @@ pub struct Args {
     #[arg(long, env = "RECLAW_HOOKS_DEFAULT_AGENT_ID")]
     pub hooks_default_agent_id: Option<String>,
 
+    #[arg(long, env = "RECLAW_HOOKS_TRANSFORMS_DIR")]
+    pub hooks_transforms_dir: Option<PathBuf>,
+
     #[arg(long, env = "RECLAW_MAX_PAYLOAD_BYTES")]
     pub max_payload_bytes: Option<usize>,
 
@@ -219,10 +222,30 @@ pub enum HookMappingAction {
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
+pub struct HookMappingMatchConfig {
+    #[serde(default)]
+    pub path: Option<String>,
+    #[serde(default)]
+    pub source: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct HookMappingTransformConfig {
+    pub module: String,
+    #[serde(default)]
+    pub export: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
 pub struct HookMappingConfig {
     #[serde(default)]
     pub id: Option<String>,
+    #[serde(default)]
     pub path: String,
+    #[serde(default)]
+    pub r#match: Option<HookMappingMatchConfig>,
     #[serde(default)]
     pub action: HookMappingAction,
     #[serde(default)]
@@ -243,6 +266,8 @@ pub struct HookMappingConfig {
     pub agent_id: Option<String>,
     #[serde(default)]
     pub session_key: Option<String>,
+    #[serde(default)]
+    pub transform: Option<HookMappingTransformConfig>,
 }
 
 #[derive(Debug, Clone)]
@@ -273,6 +298,7 @@ pub struct RuntimeConfig {
     pub hooks_allow_request_session_key: bool,
     pub hooks_default_session_key: Option<String>,
     pub hooks_default_agent_id: String,
+    pub hooks_transforms_dir: PathBuf,
     pub hooks_mappings: Vec<HookMappingConfig>,
     pub openai_chat_completions_enabled: bool,
     pub openresponses_enabled: bool,
@@ -302,7 +328,7 @@ impl RuntimeConfig {
         } else {
             default_static_config_paths()
         };
-        let static_config = load_static_config_from_paths(&static_paths)?;
+        let (static_config, static_config_dir) = load_static_config_with_source_dir(&static_paths)?;
 
         let host = args
             .host
@@ -452,6 +478,12 @@ impl RuntimeConfig {
                 .or(static_config.hooks_default_agent_id),
         )
         .unwrap_or_else(|| "main".to_owned());
+        let hooks_transforms_dir = resolve_hooks_transforms_dir(
+            args.hooks_transforms_dir
+                .or(static_config.hooks_transforms_dir),
+            args.config.as_deref(),
+            static_config_dir.as_deref(),
+        );
         let hooks_mappings = static_config.hooks_mappings.unwrap_or_default();
         if hooks_enabled && hooks_token.is_none() {
             return Err("hooks.enabled requires hooks.token".to_owned());
@@ -524,6 +556,7 @@ impl RuntimeConfig {
             hooks_allow_request_session_key,
             hooks_default_session_key,
             hooks_default_agent_id,
+            hooks_transforms_dir,
             hooks_mappings,
             openai_chat_completions_enabled,
             openresponses_enabled,
@@ -577,6 +610,7 @@ impl RuntimeConfig {
             hooks_allow_request_session_key: false,
             hooks_default_session_key: None,
             hooks_default_agent_id: "main".to_owned(),
+            hooks_transforms_dir: PathBuf::from("./hooks/transforms"),
             hooks_mappings: Vec::new(),
             openai_chat_completions_enabled: false,
             openresponses_enabled: false,
@@ -627,6 +661,7 @@ struct StaticConfigValues {
     hooks_allow_request_session_key: Option<bool>,
     hooks_default_session_key: Option<String>,
     hooks_default_agent_id: Option<String>,
+    hooks_transforms_dir: Option<PathBuf>,
     hooks_mappings: Option<Vec<HookMappingConfig>>,
     openai_chat_completions_enabled: Option<bool>,
     openresponses_enabled: Option<bool>,
@@ -698,6 +733,7 @@ impl StaticConfigValues {
             &mut self.hooks_default_agent_id,
             other.hooks_default_agent_id,
         );
+        override_option(&mut self.hooks_transforms_dir, other.hooks_transforms_dir);
         override_option(&mut self.hooks_mappings, other.hooks_mappings);
         override_option(
             &mut self.openai_chat_completions_enabled,
@@ -745,8 +781,11 @@ fn default_static_config_paths_for(home: Option<&Path>) -> Vec<PathBuf> {
     paths
 }
 
-fn load_static_config_from_paths(paths: &[PathBuf]) -> Result<StaticConfigValues, String> {
+fn load_static_config_with_source_dir(
+    paths: &[PathBuf],
+) -> Result<(StaticConfigValues, Option<PathBuf>), String> {
     let mut merged = StaticConfigValues::default();
+    let mut source_dir = None;
 
     for path in paths {
         if !path.exists() {
@@ -755,9 +794,10 @@ fn load_static_config_from_paths(paths: &[PathBuf]) -> Result<StaticConfigValues
 
         let parsed = load_static_config_file(path)?;
         merged.merge_from(parsed);
+        source_dir = path.parent().map(Path::to_path_buf);
     }
 
-    Ok(merged)
+    Ok((merged, source_dir))
 }
 
 fn load_static_config_file(path: &Path) -> Result<StaticConfigValues, String> {
@@ -834,6 +874,29 @@ fn normalize_hooks_path(input: String) -> Result<String, String> {
     Ok(path)
 }
 
+fn resolve_hooks_transforms_dir(
+    configured: Option<PathBuf>,
+    explicit_config_path: Option<&Path>,
+    loaded_config_dir: Option<&Path>,
+) -> PathBuf {
+    let base_dir = explicit_config_path
+        .and_then(Path::parent)
+        .map(Path::to_path_buf)
+        .or_else(|| loaded_config_dir.map(Path::to_path_buf))
+        .or_else(|| home_dir().map(|home| home.join(".reclaw")));
+
+    match configured {
+        Some(path) if path.is_absolute() => path,
+        Some(path) => match &base_dir {
+            Some(base) => base.join(path),
+            None => path,
+        },
+        None => base_dir
+            .map(|base| base.join("hooks/transforms"))
+            .unwrap_or_else(|| PathBuf::from("./hooks/transforms")),
+    }
+}
+
 fn resolve_auth_mode(token: Option<String>, password: Option<String>) -> Result<AuthMode, String> {
     let token = normalize_non_empty(token);
     let password = normalize_non_empty(password);
@@ -854,7 +917,7 @@ mod tests {
 
     use super::{
         Args, AuthMode, RuntimeConfig, default_static_config_paths_for,
-        load_static_config_from_paths, resolve_auth_mode, system_config_toml_path,
+        load_static_config_with_source_dir, resolve_auth_mode, system_config_toml_path,
         user_config_toml_path_for,
     };
 
@@ -891,6 +954,7 @@ mod tests {
             hooks_allow_request_session_key: None,
             hooks_default_session_key: None,
             hooks_default_agent_id: None,
+            hooks_transforms_dir: None,
             max_payload_bytes: None,
             max_buffered_bytes: None,
             handshake_timeout_ms: None,
@@ -952,11 +1016,12 @@ mod tests {
             .expect("system config should write");
         fs::write(&user_path, "port = 20000\n").expect("user config should write");
 
-        let merged =
-            load_static_config_from_paths(&[system_path, user_path]).expect("config should load");
+        let (merged, source_dir) = load_static_config_with_source_dir(&[system_path, user_path])
+            .expect("config should load");
 
         assert_eq!(merged.port, Some(20000));
         assert_eq!(merged.max_payload_bytes, Some(100));
+        assert_eq!(source_dir, Some(temp_dir.path().to_path_buf()));
     }
 
     #[test]
@@ -1091,6 +1156,10 @@ mod tests {
             Some("hook:default")
         );
         assert_eq!(runtime.hooks_default_agent_id, "default-agent");
+        assert_eq!(
+            runtime.hooks_transforms_dir,
+            temp_dir.path().join("hooks/transforms")
+        );
     }
 
     #[test]
@@ -1121,6 +1190,41 @@ mod tests {
         assert_eq!(
             runtime.hooks_mappings[1].text_template.as_deref(),
             Some("ping {{source}}")
+        );
+    }
+
+    #[test]
+    fn runtime_config_supports_hooks_transform_mappings() {
+        let temp_dir = tempfile::tempdir().expect("temp dir should be created");
+        let config_path = temp_dir.path().join("config.toml");
+        fs::write(
+            &config_path,
+            "hooksEnabled = true\nhooksToken = \"hooks-token\"\nhooksTransformsDir = \"./xforms\"\n[[hooksMappings]]\npath = \"github/push\"\naction = \"agent\"\nmessageTemplate = \"repo={{repo}}\"\n[hooksMappings.transform]\nmodule = \"github.mjs\"\nexport = \"transform\"\n",
+        )
+        .expect("config should write");
+
+        let mut args = empty_args();
+        args.config = Some(config_path);
+
+        let runtime = RuntimeConfig::from_args(args).expect("runtime config should build");
+        assert_eq!(runtime.hooks_mappings.len(), 1);
+        assert_eq!(
+            runtime.hooks_transforms_dir,
+            temp_dir.path().join("./xforms")
+        );
+        assert_eq!(
+            runtime.hooks_mappings[0]
+                .transform
+                .as_ref()
+                .map(|transform| transform.module.as_str()),
+            Some("github.mjs")
+        );
+        assert_eq!(
+            runtime.hooks_mappings[0]
+                .transform
+                .as_ref()
+                .and_then(|transform| transform.export.as_deref()),
+            Some("transform")
         );
     }
 

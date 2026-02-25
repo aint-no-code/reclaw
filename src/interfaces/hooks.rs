@@ -1,17 +1,24 @@
-use std::net::SocketAddr;
+use std::{
+    net::SocketAddr,
+    path::{Path, PathBuf},
+    process::Stdio,
+    time::Duration,
+};
 
 use axum::{
     Json,
     body::to_bytes,
-    extract::{ConnectInfo, Path, Request, State},
+    extract::{ConnectInfo, Path as AxumPath, Request, State},
     http::{HeaderMap, Method, StatusCode, Uri, header},
 };
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
+use tokio::process::Command;
+use tokio::time::timeout;
 
 use crate::{
     application::{
-        config::{HookMappingAction, HookMappingConfig, RuntimeConfig},
+        config::{HookMappingAction, HookMappingConfig, HookMappingTransformConfig, RuntimeConfig},
         state::SharedState,
     },
     protocol::ERROR_INVALID_REQUEST,
@@ -30,6 +37,26 @@ const HOOKS_AUTH_SCOPE_PREFIX: &str = "hooks-auth:";
 const HOOKS_TOKEN_HEADER: &str = "x-openclaw-token";
 const HOOKS_SESSION_POLICY_ERROR: &str = "sessionKey is disabled for external /hooks/agent payloads; set hooksAllowRequestSessionKey=true to enable";
 const HOOKS_QUERY_TOKEN_ERROR: &str = "Hook token must be provided via Authorization: Bearer <token> or X-OpenClaw-Token header (query parameters are not allowed).";
+const HOOKS_TRANSFORM_CONTEXT_ENV: &str = "RECLAW_HOOK_CONTEXT_JSON";
+const HOOKS_TRANSFORM_EXPORT_ENV: &str = "RECLAW_HOOK_TRANSFORM_EXPORT";
+const HOOKS_TRANSFORM_TIMEOUT: Duration = Duration::from_secs(5);
+const HOOKS_JS_TRANSFORM_RUNNER: &str = r#"
+import { pathToFileURL } from 'node:url';
+
+const modulePath = process.argv[1];
+const exportName = process.argv[2] || '';
+const context = process.env.RECLAW_HOOK_CONTEXT_JSON ?? '{}';
+
+const mod = await import(pathToFileURL(modulePath).href);
+const candidate = (exportName && mod[exportName]) ?? mod.default ?? mod.transform;
+if (typeof candidate !== 'function') {
+  throw new Error('hook transform module must export a function');
+}
+
+const parsed = JSON.parse(context);
+const output = await candidate(parsed);
+process.stdout.write(JSON.stringify(output === undefined ? null : output));
+"#;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum HookWakeMode {
@@ -97,6 +124,34 @@ struct HookTemplateContext<'a> {
     headers: &'a Map<String, Value>,
     path: &'a str,
     query: &'a Map<String, Value>,
+    url: &'a str,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct HookTransformOverride {
+    #[serde(default)]
+    kind: Option<HookMappingAction>,
+    #[serde(default)]
+    text: Option<String>,
+    #[serde(default)]
+    mode: Option<String>,
+    #[serde(default)]
+    message: Option<String>,
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
+    agent_id: Option<String>,
+    #[serde(default)]
+    wake_mode: Option<String>,
+    #[serde(default)]
+    session_key: Option<String>,
+}
+
+#[derive(Debug)]
+enum HookResolvedAction {
+    Wake(HookWakeNormalized),
+    Agent(HookAgentNormalized),
 }
 
 pub async fn root_handler(
@@ -108,7 +163,7 @@ pub async fn root_handler(
 }
 
 pub async fn subpath_handler(
-    Path(subpath): Path<String>,
+    AxumPath(subpath): AxumPath<String>,
     State(state): State<SharedState>,
     ConnectInfo(remote_addr): ConnectInfo<SocketAddr>,
     request: Request,
@@ -176,11 +231,13 @@ async fn handle_request(
     }
     let normalized_headers = normalize_hook_headers(&request_headers);
     let query_values = parse_query_values(&request_uri);
+    let request_url = request_uri.to_string();
     let template_context = HookTemplateContext {
         payload: &payload,
         headers: &normalized_headers,
         path: normalized_subpath,
         query: &query_values,
+        url: &request_url,
     };
 
     match normalized_subpath {
@@ -357,39 +414,59 @@ async fn dispatch_mapping(
     mapping: HookMappingConfig,
     context: &HookTemplateContext<'_>,
 ) -> (StatusCode, Json<Value>) {
+    let base = match build_mapping_action(&mapping, context) {
+        Ok(value) => value,
+        Err(error) => {
+            return error_response(StatusCode::BAD_REQUEST, "INVALID_REQUEST", error);
+        }
+    };
+    let resolved = match apply_mapping_transform_if_configured(&state, &mapping, context, base)
+        .await
+    {
+        Ok(Some(value)) => value,
+        Ok(None) => {
+            return (
+                StatusCode::OK,
+                Json(json!({
+                    "ok": true,
+                    "skipped": true,
+                })),
+            );
+        }
+        Err(error) => return error_response(StatusCode::SERVICE_UNAVAILABLE, "UNAVAILABLE", error),
+    };
+
+    match resolved {
+        HookResolvedAction::Wake(wake) => dispatch_wake(state, wake).await,
+        HookResolvedAction::Agent(agent) => {
+            dispatch_agent(state, agent, HookSessionKeySource::Mapping).await
+        }
+    }
+}
+
+fn build_mapping_action(
+    mapping: &HookMappingConfig,
+    context: &HookTemplateContext<'_>,
+) -> Result<HookResolvedAction, String> {
     match mapping.action {
         HookMappingAction::Wake => {
-            let text = trim_non_empty(resolve_mapped_text(&mapping, context))
-                .ok_or_else(|| "hook mapping requires text".to_owned());
-            let text = match text {
-                Ok(value) => value,
-                Err(error) => {
-                    return error_response(StatusCode::BAD_REQUEST, "INVALID_REQUEST", error);
-                }
-            };
-            let wake = HookWakeNormalized {
+            let text = trim_non_empty(resolve_mapped_text(mapping, context))
+                .ok_or_else(|| "hook mapping requires text".to_owned())?;
+            Ok(HookResolvedAction::Wake(HookWakeNormalized {
                 text,
                 mode: HookWakeMode::from_raw(mapping.wake_mode.as_deref()),
-            };
-            dispatch_wake(state, wake).await
+            }))
         }
         HookMappingAction::Agent => {
-            let message = trim_non_empty(resolve_mapped_message(&mapping, context))
-                .ok_or_else(|| "hook mapping requires message".to_owned());
-            let message = match message {
-                Ok(value) => value,
-                Err(error) => {
-                    return error_response(StatusCode::BAD_REQUEST, "INVALID_REQUEST", error);
-                }
-            };
-            let agent = HookAgentNormalized {
+            let message = trim_non_empty(resolve_mapped_message(mapping, context))
+                .ok_or_else(|| "hook mapping requires message".to_owned())?;
+            Ok(HookResolvedAction::Agent(HookAgentNormalized {
                 message,
                 name: trim_non_empty(mapping.name.clone()).unwrap_or_else(|| "Hook".to_owned()),
                 agent_id: trim_non_empty(mapping.agent_id.clone()),
                 wake_mode: HookWakeMode::from_raw(mapping.wake_mode.as_deref()),
                 session_key: trim_non_empty(mapping.session_key.clone()),
-            };
-            dispatch_agent(state, agent, HookSessionKeySource::Mapping).await
+            }))
         }
     }
 }
@@ -413,11 +490,14 @@ fn mapping_matches(
     target_path: &str,
     payload: &Map<String, Value>,
 ) -> bool {
-    if normalize_mapping_path(&mapping.path) != target_path {
+    let Some(mapping_path) = mapping_path_value(mapping) else {
+        return false;
+    };
+    if normalize_mapping_path(&mapping_path) != target_path {
         return false;
     }
 
-    let Some(match_source) = trim_non_empty(mapping.match_source.clone()) else {
+    let Some(match_source) = mapping_match_source_value(mapping) else {
         return true;
     };
     payload
@@ -425,6 +505,24 @@ fn mapping_matches(
         .and_then(Value::as_str)
         .map(str::trim)
         .is_some_and(|source| source == match_source)
+}
+
+fn mapping_path_value(mapping: &HookMappingConfig) -> Option<String> {
+    trim_non_empty(Some(mapping.path.clone())).or_else(|| {
+        mapping
+            .r#match
+            .as_ref()
+            .and_then(|rule| trim_non_empty(rule.path.clone()))
+    })
+}
+
+fn mapping_match_source_value(mapping: &HookMappingConfig) -> Option<String> {
+    trim_non_empty(mapping.match_source.clone()).or_else(|| {
+        mapping
+            .r#match
+            .as_ref()
+            .and_then(|rule| trim_non_empty(rule.source.clone()))
+    })
 }
 
 fn normalize_mapping_path(path: &str) -> String {
@@ -454,6 +552,297 @@ fn resolve_mapped_message(
         return Some(render_template(&template, context));
     }
     mapping.message.clone()
+}
+
+async fn apply_mapping_transform_if_configured(
+    state: &SharedState,
+    mapping: &HookMappingConfig,
+    context: &HookTemplateContext<'_>,
+    base: HookResolvedAction,
+) -> Result<Option<HookResolvedAction>, String> {
+    let Some(transform) = mapping.transform.as_ref() else {
+        return Ok(Some(base));
+    };
+
+    let override_data = execute_hook_transform(state.config(), transform, context).await?;
+    let Some(override_data) = override_data else {
+        return Ok(None);
+    };
+
+    merge_hook_action(base, override_data).map(Some)
+}
+
+fn merge_hook_action(
+    base: HookResolvedAction,
+    override_data: HookTransformOverride,
+) -> Result<HookResolvedAction, String> {
+    let base_kind = match base {
+        HookResolvedAction::Wake(_) => HookMappingAction::Wake,
+        HookResolvedAction::Agent(_) => HookMappingAction::Agent,
+    };
+    let effective_kind = override_data.kind.unwrap_or(base_kind);
+
+    match effective_kind {
+        HookMappingAction::Wake => {
+            let base_wake = match base {
+                HookResolvedAction::Wake(value) => Some(value),
+                HookResolvedAction::Agent(_) => None,
+            };
+            let text = trim_non_empty(override_data.text)
+                .or_else(|| base_wake.as_ref().map(|value| value.text.clone()))
+                .ok_or_else(|| "hook mapping requires text".to_owned())?;
+            let mode = if override_data
+                .mode
+                .as_deref()
+                .is_some_and(|value| value.trim() == "next-heartbeat")
+            {
+                HookWakeMode::NextHeartbeat
+            } else if override_data.mode.is_some() {
+                HookWakeMode::Now
+            } else {
+                base_wake
+                    .as_ref()
+                    .map(|value| value.mode)
+                    .unwrap_or(HookWakeMode::Now)
+            };
+            Ok(HookResolvedAction::Wake(HookWakeNormalized { text, mode }))
+        }
+        HookMappingAction::Agent => {
+            let base_agent = match base {
+                HookResolvedAction::Wake(_) => None,
+                HookResolvedAction::Agent(value) => Some(value),
+            };
+            let message = trim_non_empty(override_data.message)
+                .or_else(|| base_agent.as_ref().map(|value| value.message.clone()))
+                .ok_or_else(|| "hook mapping requires message".to_owned())?;
+            let wake_mode = if override_data
+                .wake_mode
+                .as_deref()
+                .is_some_and(|value| value.trim() == "next-heartbeat")
+            {
+                HookWakeMode::NextHeartbeat
+            } else if override_data.wake_mode.is_some() {
+                HookWakeMode::Now
+            } else {
+                base_agent
+                    .as_ref()
+                    .map(|value| value.wake_mode)
+                    .unwrap_or(HookWakeMode::Now)
+            };
+
+            Ok(HookResolvedAction::Agent(HookAgentNormalized {
+                message,
+                name: trim_non_empty(override_data.name)
+                    .or_else(|| base_agent.as_ref().map(|value| value.name.clone()))
+                    .unwrap_or_else(|| "Hook".to_owned()),
+                agent_id: trim_non_empty(override_data.agent_id).or_else(|| {
+                    base_agent
+                        .as_ref()
+                        .and_then(|value| trim_non_empty(value.agent_id.clone()))
+                }),
+                wake_mode,
+                session_key: trim_non_empty(override_data.session_key).or_else(|| {
+                    base_agent
+                        .as_ref()
+                        .and_then(|value| trim_non_empty(value.session_key.clone()))
+                }),
+            }))
+        }
+    }
+}
+
+async fn execute_hook_transform(
+    config: &RuntimeConfig,
+    transform: &HookMappingTransformConfig,
+    context: &HookTemplateContext<'_>,
+) -> Result<Option<HookTransformOverride>, String> {
+    let module_path =
+        resolve_transform_module_path(&config.hooks_transforms_dir, transform.module.as_str())?;
+    let context_payload = json!({
+        "payload": context.payload,
+        "headers": context.headers,
+        "query": context.query,
+        "path": context.path,
+        "url": context.url,
+    });
+    let context_json = serde_json::to_string(&context_payload)
+        .map_err(|error| format!("failed to encode hook transform context: {error}"))?;
+
+    let mut command = build_transform_command(
+        &module_path,
+        trim_non_empty(transform.export.clone()).as_deref(),
+    );
+    command.stdin(Stdio::null());
+    command.stdout(Stdio::piped());
+    command.stderr(Stdio::piped());
+    command.env(HOOKS_TRANSFORM_CONTEXT_ENV, context_json);
+    if let Some(export) = trim_non_empty(transform.export.clone()) {
+        command.env(HOOKS_TRANSFORM_EXPORT_ENV, export);
+    }
+
+    let output = timeout(HOOKS_TRANSFORM_TIMEOUT, command.output())
+        .await
+        .map_err(|_| {
+            format!(
+                "hook transform timed out after {}s: {}",
+                HOOKS_TRANSFORM_TIMEOUT.as_secs(),
+                module_path.display()
+            )
+        })?
+        .map_err(|error| format!("failed to execute hook transform: {error}"))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();
+        return Err(if stderr.is_empty() {
+            format!(
+                "hook transform failed with status {}: {}",
+                output
+                    .status
+                    .code()
+                    .map_or_else(|| "unknown".to_owned(), |code| code.to_string()),
+                module_path.display()
+            )
+        } else {
+            format!(
+                "hook transform failed for {}: {stderr}",
+                module_path.display()
+            )
+        });
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+    if stdout.is_empty() {
+        return Err(format!(
+            "hook transform returned empty output: {}",
+            module_path.display()
+        ));
+    }
+
+    let value: Value = serde_json::from_str(&stdout)
+        .map_err(|error| format!("hook transform emitted invalid JSON: {error}"))?;
+    if value.is_null() {
+        return Ok(None);
+    }
+
+    serde_json::from_value::<HookTransformOverride>(value)
+        .map(Some)
+        .map_err(|error| format!("hook transform output shape is invalid: {error}"))
+}
+
+fn build_transform_command(module_path: &Path, export_name: Option<&str>) -> Command {
+    if is_js_transform_module(module_path) {
+        let mut command = Command::new("node");
+        command.arg("--input-type=module");
+        command.arg("-e");
+        command.arg(HOOKS_JS_TRANSFORM_RUNNER);
+        command.arg(module_path);
+        command.arg(export_name.unwrap_or_default());
+        return command;
+    }
+
+    let mut command = Command::new(module_path);
+    if let Some(export_name) = export_name {
+        command.arg("--export");
+        command.arg(export_name);
+    }
+    command
+}
+
+fn is_js_transform_module(module_path: &Path) -> bool {
+    module_path
+        .extension()
+        .and_then(|value| value.to_str())
+        .map(str::to_ascii_lowercase)
+        .is_some_and(|value| value == "js" || value == "mjs" || value == "cjs")
+}
+
+fn resolve_transform_module_path(transforms_dir: &Path, module: &str) -> Result<PathBuf, String> {
+    let module = module.trim();
+    if module.is_empty() {
+        return Err("hook transform module path is required".to_owned());
+    }
+
+    let base_dir = normalize_lexical_path(&absolutize_path(transforms_dir));
+    let candidate = {
+        let raw = PathBuf::from(module);
+        if raw.is_absolute() {
+            raw
+        } else {
+            base_dir.join(raw)
+        }
+    };
+    let resolved = normalize_lexical_path(&absolutize_path(&candidate));
+    if !resolved.starts_with(&base_dir) {
+        return Err(format!(
+            "hook transform module path must be within {}: {}",
+            base_dir.display(),
+            module
+        ));
+    }
+
+    if let (Some(base_real), Some(existing_real)) = (
+        canonicalize_if_exists(&base_dir),
+        existing_ancestor(&resolved).and_then(|path| canonicalize_if_exists(&path)),
+    ) && !existing_real.starts_with(base_real)
+    {
+        return Err(format!(
+            "hook transform module path must be within {}: {}",
+            base_dir.display(),
+            module
+        ));
+    }
+
+    Ok(resolved)
+}
+
+fn canonicalize_if_exists(path: &Path) -> Option<PathBuf> {
+    if !path.exists() {
+        return None;
+    }
+    std::fs::canonicalize(path).ok()
+}
+
+fn existing_ancestor(path: &Path) -> Option<PathBuf> {
+    let mut current = path.to_path_buf();
+    loop {
+        if current.exists() {
+            return Some(current);
+        }
+        if !current.pop() {
+            return None;
+        }
+    }
+}
+
+fn absolutize_path(path: &Path) -> PathBuf {
+    if path.is_absolute() {
+        return path.to_path_buf();
+    }
+    match std::env::current_dir() {
+        Ok(current) => current.join(path),
+        Err(_) => path.to_path_buf(),
+    }
+}
+
+fn normalize_lexical_path(path: &Path) -> PathBuf {
+    use std::path::Component;
+
+    let mut out = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::Prefix(prefix) => out.push(prefix.as_os_str()),
+            Component::RootDir => out.push(component.as_os_str()),
+            Component::CurDir => {}
+            Component::ParentDir => {
+                let popped = out.pop();
+                if !popped {
+                    out.push(component.as_os_str());
+                }
+            }
+            Component::Normal(segment) => out.push(segment),
+        }
+    }
+    out
 }
 
 fn render_template(template: &str, context: &HookTemplateContext<'_>) -> String {
@@ -739,9 +1128,10 @@ fn error_response(
 mod tests {
     use super::{
         HOOKS_SESSION_POLICY_ERROR, HookSessionKeySource, HookTemplateContext, has_token_query,
-        normalize_mapping_path, render_template, resolve_session_key_policy,
+        mapping_matches, normalize_mapping_path, render_template, resolve_session_key_policy,
+        resolve_transform_module_path,
     };
-    use crate::application::config::RuntimeConfig;
+    use crate::application::config::{HookMappingAction, HookMappingConfig, RuntimeConfig};
 
     #[test]
     fn token_query_detector_matches_token_field() {
@@ -775,6 +1165,37 @@ mod tests {
     }
 
     #[test]
+    fn mapping_match_supports_openclaw_style_match_fields() {
+        let mapping = HookMappingConfig {
+            id: Some("openclaw-style".to_owned()),
+            path: String::new(),
+            r#match: Some(crate::application::config::HookMappingMatchConfig {
+                path: Some("github/push".to_owned()),
+                source: Some("github".to_owned()),
+            }),
+            action: HookMappingAction::Agent,
+            match_source: None,
+            wake_mode: None,
+            text: None,
+            text_template: None,
+            message: Some("ok".to_owned()),
+            message_template: None,
+            name: None,
+            agent_id: None,
+            session_key: None,
+            transform: None,
+        };
+        let payload = serde_json::json!({
+            "source": "github",
+        })
+        .as_object()
+        .cloned()
+        .unwrap_or_default();
+
+        assert!(mapping_matches(&mapping, "github/push", &payload));
+    }
+
+    #[test]
     fn render_template_resolves_nested_payload_paths() {
         let payload = serde_json::json!({
             "repo": "reclaw",
@@ -789,6 +1210,7 @@ mod tests {
             headers: &headers,
             path: "github/push",
             query: &query,
+            url: "/hooks/github/push",
         };
         let rendered = render_template(
             "repo={{repo}} actor={{actor.name}} first={{commits[0].id}}",
@@ -817,6 +1239,7 @@ mod tests {
             headers: &headers,
             path: "github/template",
             query: &query,
+            url: "/hooks/github/template?kind=push",
         };
 
         let rendered = render_template(
@@ -824,5 +1247,12 @@ mod tests {
             &context,
         );
         assert_eq!(rendered, "ua=reclaw-test kind=push path=github/template");
+    }
+
+    #[test]
+    fn transform_path_resolution_blocks_parent_traversal() {
+        let transforms_dir = std::path::PathBuf::from("/tmp/reclaw-hooks/transforms");
+        let result = resolve_transform_module_path(&transforms_dir, "../evil.mjs");
+        assert!(result.is_err());
     }
 }

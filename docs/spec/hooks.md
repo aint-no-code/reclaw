@@ -11,6 +11,7 @@ This document defines the OpenClaw-compatible external hooks ingress implemented
 - `hooksAllowRequestSessionKey` (`RECLAW_HOOKS_ALLOW_REQUEST_SESSION_KEY`, default `false`)
 - `hooksDefaultSessionKey` (`RECLAW_HOOKS_DEFAULT_SESSION_KEY`, optional)
 - `hooksDefaultAgentId` (`RECLAW_HOOKS_DEFAULT_AGENT_ID`, default `main`)
+- `hooksTransformsDir` (`RECLAW_HOOKS_TRANSFORMS_DIR`, default `<configDir>/hooks/transforms`)
 - `hooksMappings` (static config array, optional)
 
 `hooksEnabled=true` requires `hooksToken` to be configured.
@@ -80,6 +81,9 @@ action = "agent"
 matchSource = "github"
 messageTemplate = "repo={{repo}} actor={{actor.name}}"
 sessionKey = "hook:github"
+[hooksMappings.transform]
+module = "github-transform.mjs"
+export = "transform"
 
 [[hooksMappings]]
 path = "watchdog/ping"
@@ -100,3 +104,10 @@ Rules:
   - query params (`{{query.kind}}`)
   - request subpath (`{{path}}`)
 - mapping-provided `sessionKey` is allowed regardless of `hooksAllowRequestSessionKey`
+- OpenClaw-style `match` object is accepted as an alternative to flat fields:
+  - `match.path`
+  - `match.source`
+- Mapping transforms are supported with `transform.module` (+ optional `transform.export`):
+  - transform receives a JSON context with `payload`, `headers`, `query`, `path`, `url`
+  - transform result may override mapped action fields (`kind`, `message`, `text`, etc.)
+  - `null` transform output marks the mapping as handled and skipped (`{ ok: true, skipped: true }`)

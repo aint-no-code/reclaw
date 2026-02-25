@@ -43,7 +43,7 @@ Scope compared: `openclaw/src/gateway/**` and `openclaw/src/channels/plugins/**`
   - static path-based mappings are implemented (`hooksMappings`) for `wake` and `agent` actions.
   - mapping `matchSource`, `messageTemplate`, and `textTemplate` are implemented.
   - template context supports payload, headers, query params, and request path.
-  - transform modules are not implemented yet.
+  - transform modules are implemented (`hooksMappings.transform.module`, optional `export`) with per-request JSON context and override/skip semantics.
 
 3. Plugin/channel runtime parity (dynamic channel plugin system).
 - OpenClaw references:

@@ -1,6 +1,14 @@
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
+
+use std::{fs, path::Path};
+
 use futures_util::SinkExt;
 use reclaw_core::{
-    application::config::{AuthMode, HookMappingAction, HookMappingConfig},
+    application::config::{
+        AuthMode, HookMappingAction, HookMappingConfig, HookMappingMatchConfig,
+        HookMappingTransformConfig,
+    },
     protocol::PROTOCOL_VERSION,
 };
 use serde_json::{Value, json};
@@ -68,6 +76,18 @@ async fn session_history_texts(
         .into_iter()
         .filter_map(|entry| entry.get("text").and_then(Value::as_str).map(str::to_owned))
         .collect()
+}
+
+#[cfg(unix)]
+fn write_executable_script(dir: &Path, name: &str, body: &str) -> std::path::PathBuf {
+    let script_path = dir.join(name);
+    fs::write(&script_path, body).expect("script should write");
+    let mut permissions = fs::metadata(&script_path)
+        .expect("script metadata should load")
+        .permissions();
+    permissions.set_mode(0o755);
+    fs::set_permissions(&script_path, permissions).expect("script permissions should set");
+    script_path
 }
 
 #[tokio::test]
@@ -286,6 +306,7 @@ async fn hooks_mapping_dispatches_agent_action() {
         config.hooks_mappings = vec![HookMappingConfig {
             id: Some("github".to_owned()),
             path: "github/push".to_owned(),
+            r#match: None,
             action: HookMappingAction::Agent,
             match_source: None,
             wake_mode: None,
@@ -296,6 +317,7 @@ async fn hooks_mapping_dispatches_agent_action() {
             name: Some("GitHub".to_owned()),
             agent_id: Some("mapped-agent".to_owned()),
             session_key: Some("hook:mapped".to_owned()),
+            transform: None,
         }];
     })
     .await;
@@ -332,6 +354,7 @@ async fn hooks_mapping_dispatches_wake_action() {
         config.hooks_mappings = vec![HookMappingConfig {
             id: Some("watchdog".to_owned()),
             path: "/watchdog/ping/".to_owned(),
+            r#match: None,
             action: HookMappingAction::Wake,
             match_source: None,
             wake_mode: Some("next-heartbeat".to_owned()),
@@ -342,6 +365,7 @@ async fn hooks_mapping_dispatches_wake_action() {
             name: None,
             agent_id: None,
             session_key: None,
+            transform: None,
         }];
     })
     .await;
@@ -371,6 +395,7 @@ async fn hooks_mapping_honors_match_source_filter() {
         config.hooks_mappings = vec![HookMappingConfig {
             id: Some("source-filter".to_owned()),
             path: "events/source".to_owned(),
+            r#match: None,
             action: HookMappingAction::Agent,
             match_source: Some("github".to_owned()),
             wake_mode: None,
@@ -381,6 +406,7 @@ async fn hooks_mapping_honors_match_source_filter() {
             name: None,
             agent_id: None,
             session_key: Some("hook:source-filter".to_owned()),
+            transform: None,
         }];
     })
     .await;
@@ -420,6 +446,7 @@ async fn hooks_mapping_renders_message_template_from_payload() {
         config.hooks_mappings = vec![HookMappingConfig {
             id: Some("template".to_owned()),
             path: "github/template".to_owned(),
+            r#match: None,
             action: HookMappingAction::Agent,
             match_source: None,
             wake_mode: None,
@@ -432,6 +459,7 @@ async fn hooks_mapping_renders_message_template_from_payload() {
             name: None,
             agent_id: None,
             session_key: Some("hook:template".to_owned()),
+            transform: None,
         }];
     })
     .await;
@@ -469,6 +497,7 @@ async fn hooks_mapping_renders_header_query_and_path_context() {
         config.hooks_mappings = vec![HookMappingConfig {
             id: Some("context".to_owned()),
             path: "context/run".to_owned(),
+            r#match: None,
             action: HookMappingAction::Agent,
             match_source: None,
             wake_mode: None,
@@ -481,6 +510,7 @@ async fn hooks_mapping_renders_header_query_and_path_context() {
             name: None,
             agent_id: None,
             session_key: Some("hook:context".to_owned()),
+            transform: None,
         }];
     })
     .await;
@@ -506,6 +536,160 @@ async fn hooks_mapping_renders_header_query_and_path_context() {
             .iter()
             .any(|text| text.contains("ua=reclaw-test/1 kind=push path=context/run"))
     );
+
+    server.stop().await;
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn hooks_mapping_transform_can_override_agent_to_wake() {
+    let transforms_dir = tempfile::tempdir().expect("temp transforms dir should create");
+    write_executable_script(
+        transforms_dir.path(),
+        "override.sh",
+        "#!/bin/sh\nprintf '{\"kind\":\"wake\",\"text\":\"transformed wake\",\"mode\":\"next-heartbeat\"}'\n",
+    );
+
+    let server = spawn_server_with(AuthMode::None, |config| {
+        config.hooks_enabled = true;
+        config.hooks_token = Some("hooks-token".to_owned());
+        config.hooks_transforms_dir = transforms_dir.path().to_path_buf();
+        config.hooks_mappings = vec![HookMappingConfig {
+            id: Some("transform-override".to_owned()),
+            path: "transform/override".to_owned(),
+            r#match: None,
+            action: HookMappingAction::Agent,
+            match_source: None,
+            wake_mode: None,
+            text: None,
+            text_template: None,
+            message: Some("base message".to_owned()),
+            message_template: None,
+            name: Some("Transform".to_owned()),
+            agent_id: None,
+            session_key: None,
+            transform: Some(HookMappingTransformConfig {
+                module: "override.sh".to_owned(),
+                export: None,
+            }),
+        }];
+    })
+    .await;
+
+    let client = reqwest::Client::new();
+    let response = client
+        .post(format!("http://{}/hooks/transform/override", server.addr))
+        .bearer_auth("hooks-token")
+        .json(&json!({
+            "source": "github",
+        }))
+        .send()
+        .await
+        .expect("hooks request should return");
+
+    assert_eq!(response.status(), reqwest::StatusCode::OK);
+    let payload: Value = response.json().await.expect("response should be json");
+    assert_eq!(payload["ok"], true);
+    assert_eq!(payload["mode"], "next-heartbeat");
+
+    server.stop().await;
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn hooks_mapping_transform_null_skips_dispatch() {
+    let transforms_dir = tempfile::tempdir().expect("temp transforms dir should create");
+    write_executable_script(
+        transforms_dir.path(),
+        "skip.sh",
+        "#!/bin/sh\nprintf 'null'\n",
+    );
+
+    let server = spawn_server_with(AuthMode::None, |config| {
+        config.hooks_enabled = true;
+        config.hooks_token = Some("hooks-token".to_owned());
+        config.hooks_transforms_dir = transforms_dir.path().to_path_buf();
+        config.hooks_mappings = vec![HookMappingConfig {
+            id: Some("transform-skip".to_owned()),
+            path: "transform/skip".to_owned(),
+            r#match: None,
+            action: HookMappingAction::Agent,
+            match_source: None,
+            wake_mode: None,
+            text: None,
+            text_template: None,
+            message: Some("base message".to_owned()),
+            message_template: None,
+            name: Some("Transform".to_owned()),
+            agent_id: None,
+            session_key: None,
+            transform: Some(HookMappingTransformConfig {
+                module: "skip.sh".to_owned(),
+                export: None,
+            }),
+        }];
+    })
+    .await;
+
+    let client = reqwest::Client::new();
+    let response = client
+        .post(format!("http://{}/hooks/transform/skip", server.addr))
+        .bearer_auth("hooks-token")
+        .json(&json!({}))
+        .send()
+        .await
+        .expect("hooks request should return");
+
+    assert_eq!(response.status(), reqwest::StatusCode::OK);
+    let payload: Value = response.json().await.expect("response should be json");
+    assert_eq!(payload["ok"], true);
+    assert_eq!(payload["skipped"], true);
+
+    server.stop().await;
+}
+
+#[tokio::test]
+async fn hooks_mapping_supports_openclaw_style_match_object() {
+    let server = spawn_server_with(AuthMode::None, |config| {
+        config.hooks_enabled = true;
+        config.hooks_token = Some("hooks-token".to_owned());
+        config.hooks_mappings = vec![HookMappingConfig {
+            id: Some("match-object".to_owned()),
+            path: String::new(),
+            r#match: Some(HookMappingMatchConfig {
+                path: Some("match/object".to_owned()),
+                source: Some("github".to_owned()),
+            }),
+            action: HookMappingAction::Agent,
+            match_source: None,
+            wake_mode: None,
+            text: None,
+            text_template: None,
+            message: Some("match object works".to_owned()),
+            message_template: None,
+            name: None,
+            agent_id: None,
+            session_key: Some("hook:match-object".to_owned()),
+            transform: None,
+        }];
+    })
+    .await;
+
+    let client = reqwest::Client::new();
+    let response = client
+        .post(format!("http://{}/hooks/match/object", server.addr))
+        .bearer_auth("hooks-token")
+        .json(&json!({
+            "source": "github",
+        }))
+        .send()
+        .await
+        .expect("hooks request should return");
+
+    assert_eq!(response.status(), reqwest::StatusCode::ACCEPTED);
+    let payload: Value = response.json().await.expect("response should be json");
+    assert_eq!(payload["ok"], true);
+    assert_eq!(payload["sessionKey"], "hook:match-object");
 
     server.stop().await;
 }
