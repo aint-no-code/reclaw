@@ -8,7 +8,7 @@ use tracing::info;
 use crate::{
     application::state::SharedState,
     domain::error::DomainError,
-    interfaces::{channels, ws},
+    interfaces::{channels, telegram, ws},
     rpc::methods::{health, status},
 };
 
@@ -20,6 +20,10 @@ pub fn build_router(state: SharedState) -> Router {
         .route("/readyz", get(readyz_handler))
         .route("/info", get(info_handler))
         .route("/channels/inbound", post(channels::inbound_handler))
+        .route(
+            "/channels/telegram/webhook",
+            post(telegram::webhook_handler),
+        )
         .with_state(state)
 }
 

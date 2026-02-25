@@ -50,53 +50,16 @@ pub async fn inbound_handler(
         );
     }
 
-    let inbound = match normalize_inbound(payload) {
-        Ok(inbound) => inbound,
-        Err(message) => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(json!({
-                    "ok": false,
-                    "error": {
-                        "code": "INVALID_REQUEST",
-                        "message": message,
-                    }
-                })),
-            );
-        }
-    };
-
-    let session = SessionContext {
-        conn_id: format!("http-inbound-{}", uuid::Uuid::new_v4()),
-        role: "operator".to_owned(),
-        scopes: policy::default_operator_scopes(),
-        client_id: format!("{}-bridge", inbound.channel),
-        client_mode: "channel-bridge".to_owned(),
-    };
-
-    let params = json!({
-        "sessionKey": inbound.session_key,
-        "message": inbound.text,
-        "idempotencyKey": inbound.idempotency_key,
-    });
-    let result = methods::chat::handle_send(&state, &session, Some(&params)).await;
-
-    match result {
-        Ok(payload) => {
-            let reply = payload
-                .get("message")
-                .and_then(Value::as_str)
-                .map(str::to_owned);
-            (
-                StatusCode::OK,
-                Json(json!({
-                    "ok": true,
-                    "sessionKey": params["sessionKey"],
-                    "runId": payload.get("runId"),
-                    "reply": reply,
-                })),
-            )
-        }
+    match ingest_inbound_message(&state, payload).await {
+        Ok(result) => (
+            StatusCode::OK,
+            Json(json!({
+                "ok": true,
+                "sessionKey": result.session_key,
+                "runId": result.run_id,
+                "reply": result.reply,
+            })),
+        ),
         Err(error) => {
             let status = if error.code == crate::protocol::ERROR_INVALID_REQUEST {
                 StatusCode::BAD_REQUEST
@@ -120,6 +83,56 @@ struct NormalizedInbound {
     text: String,
     session_key: String,
     idempotency_key: String,
+}
+
+#[derive(Debug)]
+pub struct InboundProcessResult {
+    pub session_key: String,
+    pub run_id: Option<String>,
+    pub reply: Option<String>,
+}
+
+pub async fn ingest_inbound_message(
+    state: &SharedState,
+    payload: InboundMessageRequest,
+) -> Result<InboundProcessResult, crate::protocol::ErrorShape> {
+    let inbound = normalize_inbound(payload).map_err(|message| {
+        crate::protocol::ErrorShape::new(crate::protocol::ERROR_INVALID_REQUEST, message)
+    })?;
+
+    let session = SessionContext {
+        conn_id: format!("http-inbound-{}", uuid::Uuid::new_v4()),
+        role: "operator".to_owned(),
+        scopes: policy::default_operator_scopes(),
+        client_id: format!("{}-bridge", inbound.channel),
+        client_mode: "channel-bridge".to_owned(),
+    };
+
+    let params = json!({
+        "sessionKey": inbound.session_key,
+        "message": inbound.text,
+        "idempotencyKey": inbound.idempotency_key,
+    });
+    let payload = methods::chat::handle_send(state, &session, Some(&params)).await?;
+
+    let run_id = payload
+        .get("runId")
+        .and_then(Value::as_str)
+        .map(str::to_owned);
+    let reply = payload
+        .get("message")
+        .and_then(Value::as_str)
+        .map(str::to_owned);
+
+    Ok(InboundProcessResult {
+        session_key: params
+            .get("sessionKey")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_owned(),
+        run_id,
+        reply,
+    })
 }
 
 fn normalize_inbound(input: InboundMessageRequest) -> Result<NormalizedInbound, String> {
