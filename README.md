@@ -138,6 +138,18 @@ Each of these adapters requires a bearer token in `Authorization`:
 - `signalWebhookToken` / `RECLAW_SIGNAL_WEBHOOK_TOKEN`
 - `whatsappWebhookToken` / `RECLAW_WHATSAPP_WEBHOOK_TOKEN`
 
+Optional outbound relay can be enabled per channel. When enabled and a reply is produced,
+Reclaw Core `POST`s a normalized JSON payload to the configured URL:
+
+- `discordOutboundUrl` / `RECLAW_DISCORD_OUTBOUND_URL`
+- `discordOutboundToken` / `RECLAW_DISCORD_OUTBOUND_TOKEN`
+- `slackOutboundUrl` / `RECLAW_SLACK_OUTBOUND_URL`
+- `slackOutboundToken` / `RECLAW_SLACK_OUTBOUND_TOKEN`
+- `signalOutboundUrl` / `RECLAW_SIGNAL_OUTBOUND_URL`
+- `signalOutboundToken` / `RECLAW_SIGNAL_OUTBOUND_TOKEN`
+- `whatsappOutboundUrl` / `RECLAW_WHATSAPP_OUTBOUND_URL`
+- `whatsappOutboundToken` / `RECLAW_WHATSAPP_OUTBOUND_TOKEN`
+
 ## LLM Compatibility Endpoints
 
 These HTTP endpoints are compatible with OpenClaw gateway behavior and are disabled by default.

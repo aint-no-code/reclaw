@@ -68,6 +68,7 @@ pub(crate) fn dispatch_webhook<'a>(
             );
         }
 
+        let outbound_conversation_id = from.clone();
         let result = match common::ingest_channel_message(
             state,
             common::ChannelInboundEvent {
@@ -89,7 +90,27 @@ pub(crate) fn dispatch_webhook<'a>(
         };
 
         common::mark_event_processed(state, &dedupe_key, "whatsapp", &message_id, &result).await;
-        common::accepted_true(&result)
+        let outbound_sent = common::maybe_dispatch_outbound_reply(
+            state,
+            state.config().whatsapp_outbound_url.as_deref(),
+            state.config().whatsapp_outbound_token.as_deref(),
+            common::OutboundReplyDispatch {
+                channel: "whatsapp",
+                conversation_id: &outbound_conversation_id,
+                source_sender_id: Some(outbound_conversation_id.as_str()),
+                source_message_id: Some(message_id.as_str()),
+                reply: result.reply.as_deref(),
+                session_key: &result.session_key,
+                run_id: result.run_id.as_deref(),
+                metadata: Some(json!({
+                    "source": "whatsapp",
+                })),
+                log_scope: "channels.whatsapp.webhook",
+            },
+        )
+        .await;
+
+        common::accepted_true_with_outbound(&result, outbound_sent)
     })
 }
 

@@ -103,6 +103,7 @@ pub(crate) fn dispatch_webhook<'a>(
             );
         }
 
+        let outbound_conversation_id = conversation_id.clone();
         let result = match common::ingest_channel_message(
             state,
             common::ChannelInboundEvent {
@@ -125,6 +126,27 @@ pub(crate) fn dispatch_webhook<'a>(
         };
 
         common::mark_event_processed(state, &dedupe_key, "slack", &dedupe_id, &result).await;
-        common::accepted_true(&result)
+        let outbound_sent = common::maybe_dispatch_outbound_reply(
+            state,
+            state.config().slack_outbound_url.as_deref(),
+            state.config().slack_outbound_token.as_deref(),
+            common::OutboundReplyDispatch {
+                channel: "slack",
+                conversation_id: &outbound_conversation_id,
+                source_sender_id: None,
+                source_message_id: Some(dedupe_id.as_str()),
+                reply: result.reply.as_deref(),
+                session_key: &result.session_key,
+                run_id: result.run_id.as_deref(),
+                metadata: Some(json!({
+                    "eventType": "message",
+                    "eventId": dedupe_id,
+                })),
+                log_scope: "channels.slack.webhook",
+            },
+        )
+        .await;
+
+        common::accepted_true_with_outbound(&result, outbound_sent)
     })
 }

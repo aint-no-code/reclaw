@@ -56,6 +56,8 @@ pub(crate) fn dispatch_webhook<'a>(
             .and_then(|author| author.get("id"))
             .and_then(Value::as_str)
             .map(str::to_owned);
+        let outbound_conversation_id = conversation_id.clone();
+        let outbound_sender_id = sender_id.clone();
 
         let result = match common::ingest_channel_message(
             state,
@@ -78,7 +80,27 @@ pub(crate) fn dispatch_webhook<'a>(
         };
 
         common::mark_event_processed(state, &dedupe_key, "discord", &message_id, &result).await;
-        common::accepted_true(&result)
+        let outbound_sent = common::maybe_dispatch_outbound_reply(
+            state,
+            state.config().discord_outbound_url.as_deref(),
+            state.config().discord_outbound_token.as_deref(),
+            common::OutboundReplyDispatch {
+                channel: "discord",
+                conversation_id: &outbound_conversation_id,
+                source_sender_id: outbound_sender_id.as_deref(),
+                source_message_id: Some(message_id.as_str()),
+                reply: result.reply.as_deref(),
+                session_key: &result.session_key,
+                run_id: result.run_id.as_deref(),
+                metadata: Some(json!({
+                    "source": "discord",
+                })),
+                log_scope: "channels.discord.webhook",
+            },
+        )
+        .await;
+
+        common::accepted_true_with_outbound(&result, outbound_sent)
     })
 }
 

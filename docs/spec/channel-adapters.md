@@ -50,6 +50,17 @@ This allows external crates to register channel adapters and compose the runtime
 - Adapter logic must treat storage-backed runtime methods as source of truth.
 - Adapter failures must return explicit JSON error shapes; no silent drops.
 - Adapter code must not bypass core auth/rate-limit invariants for operator/node RPC.
+- Non-Telegram adapters can optionally dispatch outbound reply relays using channel-specific
+  `*OutboundUrl` + `*OutboundToken` config keys.
+- Outbound relay payload shape is normalized:
+  - `channel`
+  - `conversationId`
+  - `reply`
+  - `sessionKey`
+  - `runId`
+  - `sourceSenderId`
+  - `sourceMessageId`
+  - `metadata` (optional)
 
 ## Next Steps
 

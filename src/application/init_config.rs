@@ -196,9 +196,17 @@ dbPath = \"{}\"\n\
 \n\
 # Additional channel webhook tokens (Authorization: Bearer <token>).\n\
 # discordWebhookToken = \"replace-me\"\n\
+# discordOutboundUrl = \"https://relay.example/discord\"\n\
+# discordOutboundToken = \"replace-me\"\n\
 # slackWebhookToken = \"replace-me\"\n\
+# slackOutboundUrl = \"https://relay.example/slack\"\n\
+# slackOutboundToken = \"replace-me\"\n\
 # signalWebhookToken = \"replace-me\"\n\
+# signalOutboundUrl = \"https://relay.example/signal\"\n\
+# signalOutboundToken = \"replace-me\"\n\
 # whatsappWebhookToken = \"replace-me\"\n\
+# whatsappOutboundUrl = \"https://relay.example/whatsapp\"\n\
+# whatsappOutboundToken = \"replace-me\"\n\
 \n\
 # HTTP compatibility endpoints (disabled by default).\n\
 # openaiChatCompletionsEnabled = true\n\

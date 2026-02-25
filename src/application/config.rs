@@ -61,14 +61,38 @@ pub struct Args {
     #[arg(long, env = "RECLAW_DISCORD_WEBHOOK_TOKEN")]
     pub discord_webhook_token: Option<String>,
 
+    #[arg(long, env = "RECLAW_DISCORD_OUTBOUND_URL")]
+    pub discord_outbound_url: Option<String>,
+
+    #[arg(long, env = "RECLAW_DISCORD_OUTBOUND_TOKEN")]
+    pub discord_outbound_token: Option<String>,
+
     #[arg(long, env = "RECLAW_SLACK_WEBHOOK_TOKEN")]
     pub slack_webhook_token: Option<String>,
+
+    #[arg(long, env = "RECLAW_SLACK_OUTBOUND_URL")]
+    pub slack_outbound_url: Option<String>,
+
+    #[arg(long, env = "RECLAW_SLACK_OUTBOUND_TOKEN")]
+    pub slack_outbound_token: Option<String>,
 
     #[arg(long, env = "RECLAW_SIGNAL_WEBHOOK_TOKEN")]
     pub signal_webhook_token: Option<String>,
 
+    #[arg(long, env = "RECLAW_SIGNAL_OUTBOUND_URL")]
+    pub signal_outbound_url: Option<String>,
+
+    #[arg(long, env = "RECLAW_SIGNAL_OUTBOUND_TOKEN")]
+    pub signal_outbound_token: Option<String>,
+
     #[arg(long, env = "RECLAW_WHATSAPP_WEBHOOK_TOKEN")]
     pub whatsapp_webhook_token: Option<String>,
+
+    #[arg(long, env = "RECLAW_WHATSAPP_OUTBOUND_URL")]
+    pub whatsapp_outbound_url: Option<String>,
+
+    #[arg(long, env = "RECLAW_WHATSAPP_OUTBOUND_TOKEN")]
+    pub whatsapp_outbound_token: Option<String>,
 
     #[arg(long, env = "RECLAW_OPENAI_CHAT_COMPLETIONS_ENABLED")]
     pub openai_chat_completions_enabled: Option<bool>,
@@ -172,9 +196,17 @@ pub struct RuntimeConfig {
     pub telegram_bot_token: Option<String>,
     pub telegram_api_base_url: String,
     pub discord_webhook_token: Option<String>,
+    pub discord_outbound_url: Option<String>,
+    pub discord_outbound_token: Option<String>,
     pub slack_webhook_token: Option<String>,
+    pub slack_outbound_url: Option<String>,
+    pub slack_outbound_token: Option<String>,
     pub signal_webhook_token: Option<String>,
+    pub signal_outbound_url: Option<String>,
+    pub signal_outbound_token: Option<String>,
     pub whatsapp_webhook_token: Option<String>,
+    pub whatsapp_outbound_url: Option<String>,
+    pub whatsapp_outbound_token: Option<String>,
     pub openai_chat_completions_enabled: bool,
     pub openresponses_enabled: bool,
     pub max_payload_bytes: usize,
@@ -284,17 +316,47 @@ impl RuntimeConfig {
             args.discord_webhook_token
                 .or(static_config.discord_webhook_token),
         );
+        let discord_outbound_url = normalize_non_empty(
+            args.discord_outbound_url
+                .or(static_config.discord_outbound_url),
+        );
+        let discord_outbound_token = normalize_non_empty(
+            args.discord_outbound_token
+                .or(static_config.discord_outbound_token),
+        );
         let slack_webhook_token = normalize_non_empty(
             args.slack_webhook_token
                 .or(static_config.slack_webhook_token),
+        );
+        let slack_outbound_url =
+            normalize_non_empty(args.slack_outbound_url.or(static_config.slack_outbound_url));
+        let slack_outbound_token = normalize_non_empty(
+            args.slack_outbound_token
+                .or(static_config.slack_outbound_token),
         );
         let signal_webhook_token = normalize_non_empty(
             args.signal_webhook_token
                 .or(static_config.signal_webhook_token),
         );
+        let signal_outbound_url = normalize_non_empty(
+            args.signal_outbound_url
+                .or(static_config.signal_outbound_url),
+        );
+        let signal_outbound_token = normalize_non_empty(
+            args.signal_outbound_token
+                .or(static_config.signal_outbound_token),
+        );
         let whatsapp_webhook_token = normalize_non_empty(
             args.whatsapp_webhook_token
                 .or(static_config.whatsapp_webhook_token),
+        );
+        let whatsapp_outbound_url = normalize_non_empty(
+            args.whatsapp_outbound_url
+                .or(static_config.whatsapp_outbound_url),
+        );
+        let whatsapp_outbound_token = normalize_non_empty(
+            args.whatsapp_outbound_token
+                .or(static_config.whatsapp_outbound_token),
         );
         let openai_chat_completions_enabled = args
             .openai_chat_completions_enabled
@@ -343,9 +405,17 @@ impl RuntimeConfig {
             telegram_bot_token,
             telegram_api_base_url,
             discord_webhook_token,
+            discord_outbound_url,
+            discord_outbound_token,
             slack_webhook_token,
+            slack_outbound_url,
+            slack_outbound_token,
             signal_webhook_token,
+            signal_outbound_url,
+            signal_outbound_token,
             whatsapp_webhook_token,
+            whatsapp_outbound_url,
+            whatsapp_outbound_token,
             openai_chat_completions_enabled,
             openresponses_enabled,
             max_payload_bytes,
@@ -380,9 +450,17 @@ impl RuntimeConfig {
             telegram_bot_token: None,
             telegram_api_base_url: "https://api.telegram.org".to_owned(),
             discord_webhook_token: None,
+            discord_outbound_url: None,
+            discord_outbound_token: None,
             slack_webhook_token: None,
+            slack_outbound_url: None,
+            slack_outbound_token: None,
             signal_webhook_token: None,
+            signal_outbound_url: None,
+            signal_outbound_token: None,
             whatsapp_webhook_token: None,
+            whatsapp_outbound_url: None,
+            whatsapp_outbound_token: None,
             openai_chat_completions_enabled: false,
             openresponses_enabled: false,
             max_payload_bytes: 512 * 1024,
@@ -414,9 +492,17 @@ struct StaticConfigValues {
     telegram_bot_token: Option<String>,
     telegram_api_base_url: Option<String>,
     discord_webhook_token: Option<String>,
+    discord_outbound_url: Option<String>,
+    discord_outbound_token: Option<String>,
     slack_webhook_token: Option<String>,
+    slack_outbound_url: Option<String>,
+    slack_outbound_token: Option<String>,
     signal_webhook_token: Option<String>,
+    signal_outbound_url: Option<String>,
+    signal_outbound_token: Option<String>,
     whatsapp_webhook_token: Option<String>,
+    whatsapp_outbound_url: Option<String>,
+    whatsapp_outbound_token: Option<String>,
     openai_chat_completions_enabled: Option<bool>,
     openresponses_enabled: Option<bool>,
     max_payload_bytes: Option<usize>,
@@ -451,11 +537,25 @@ impl StaticConfigValues {
         override_option(&mut self.telegram_bot_token, other.telegram_bot_token);
         override_option(&mut self.telegram_api_base_url, other.telegram_api_base_url);
         override_option(&mut self.discord_webhook_token, other.discord_webhook_token);
+        override_option(&mut self.discord_outbound_url, other.discord_outbound_url);
+        override_option(
+            &mut self.discord_outbound_token,
+            other.discord_outbound_token,
+        );
         override_option(&mut self.slack_webhook_token, other.slack_webhook_token);
+        override_option(&mut self.slack_outbound_url, other.slack_outbound_url);
+        override_option(&mut self.slack_outbound_token, other.slack_outbound_token);
         override_option(&mut self.signal_webhook_token, other.signal_webhook_token);
+        override_option(&mut self.signal_outbound_url, other.signal_outbound_url);
+        override_option(&mut self.signal_outbound_token, other.signal_outbound_token);
         override_option(
             &mut self.whatsapp_webhook_token,
             other.whatsapp_webhook_token,
+        );
+        override_option(&mut self.whatsapp_outbound_url, other.whatsapp_outbound_url);
+        override_option(
+            &mut self.whatsapp_outbound_token,
+            other.whatsapp_outbound_token,
         );
         override_option(
             &mut self.openai_chat_completions_enabled,
@@ -612,9 +712,17 @@ mod tests {
             telegram_bot_token: None,
             telegram_api_base_url: None,
             discord_webhook_token: None,
+            discord_outbound_url: None,
+            discord_outbound_token: None,
             slack_webhook_token: None,
+            slack_outbound_url: None,
+            slack_outbound_token: None,
             signal_webhook_token: None,
+            signal_outbound_url: None,
+            signal_outbound_token: None,
             whatsapp_webhook_token: None,
+            whatsapp_outbound_url: None,
+            whatsapp_outbound_token: None,
             openai_chat_completions_enabled: None,
             openresponses_enabled: None,
             max_payload_bytes: None,
@@ -743,19 +851,40 @@ mod tests {
         let config_path = temp_dir.path().join("config.toml");
         fs::write(
             &config_path,
-            "discordWebhookToken = \"discord-a\"\nslackWebhookToken = \"slack-a\"\nsignalWebhookToken = \"signal-a\"\nwhatsappWebhookToken = \"wa-a\"\n",
+            "discordWebhookToken = \"discord-a\"\ndiscordOutboundUrl = \"https://relay.example/discord\"\nslackWebhookToken = \"slack-a\"\nslackOutboundUrl = \"https://relay.example/slack\"\nsignalWebhookToken = \"signal-a\"\nsignalOutboundUrl = \"https://relay.example/signal\"\nwhatsappWebhookToken = \"wa-a\"\nwhatsappOutboundUrl = \"https://relay.example/whatsapp\"\n",
         )
         .expect("config should write");
 
         let mut args = empty_args();
         args.config = Some(config_path);
         args.slack_webhook_token = Some("slack-cli".to_owned());
+        args.signal_outbound_token = Some("signal-cli-token".to_owned());
 
         let runtime = RuntimeConfig::from_args(args).expect("runtime config should build");
         assert_eq!(runtime.discord_webhook_token.as_deref(), Some("discord-a"));
+        assert_eq!(
+            runtime.discord_outbound_url.as_deref(),
+            Some("https://relay.example/discord")
+        );
         assert_eq!(runtime.slack_webhook_token.as_deref(), Some("slack-cli"));
+        assert_eq!(
+            runtime.slack_outbound_url.as_deref(),
+            Some("https://relay.example/slack")
+        );
         assert_eq!(runtime.signal_webhook_token.as_deref(), Some("signal-a"));
+        assert_eq!(
+            runtime.signal_outbound_url.as_deref(),
+            Some("https://relay.example/signal")
+        );
+        assert_eq!(
+            runtime.signal_outbound_token.as_deref(),
+            Some("signal-cli-token")
+        );
         assert_eq!(runtime.whatsapp_webhook_token.as_deref(), Some("wa-a"));
+        assert_eq!(
+            runtime.whatsapp_outbound_url.as_deref(),
+            Some("https://relay.example/whatsapp")
+        );
     }
 
     #[test]

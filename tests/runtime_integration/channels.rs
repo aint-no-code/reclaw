@@ -1,6 +1,6 @@
 use std::net::Ipv4Addr;
 
-use axum::{Json, Router, routing::post};
+use axum::{Json, Router, http::header, routing::post};
 use futures_util::SinkExt;
 use reclaw_core::application::config::AuthMode;
 use reclaw_core::application::state::SharedState;
@@ -48,6 +48,55 @@ async fn assert_session_has_history(server_addr: std::net::SocketAddr, session_k
             .as_array()
             .is_some_and(|messages| messages.len() >= 2)
     );
+}
+
+async fn spawn_outbound_capture(
+    route_path: &'static str,
+) -> (
+    std::net::SocketAddr,
+    oneshot::Sender<()>,
+    tokio::task::JoinHandle<()>,
+    mpsc::UnboundedReceiver<(Option<String>, Value)>,
+) {
+    let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
+        .await
+        .expect("mock listener should bind");
+    let addr = listener
+        .local_addr()
+        .expect("mock listener should expose local addr");
+    let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
+    let (body_tx, body_rx) = mpsc::unbounded_channel::<(Option<String>, Value)>();
+
+    let app = Router::new().route(
+        route_path,
+        post({
+            let body_tx = body_tx.clone();
+            move |headers: axum::http::HeaderMap, Json(body): Json<Value>| {
+                let body_tx = body_tx.clone();
+                async move {
+                    let auth = headers
+                        .get(header::AUTHORIZATION)
+                        .and_then(|value| value.to_str().ok())
+                        .map(str::to_owned);
+                    let _ = body_tx.send((auth, body));
+                    Json(json!({
+                        "ok": true,
+                        "accepted": true,
+                    }))
+                }
+            }
+        }),
+    );
+
+    let join = tokio::spawn(async move {
+        let _ = axum::serve(listener, app)
+            .with_graceful_shutdown(async {
+                let _ = shutdown_rx.await;
+            })
+            .await;
+    });
+
+    (addr, shutdown_tx, join, body_rx)
 }
 
 #[tokio::test]
@@ -543,6 +592,59 @@ async fn slack_webhook_ingests_event_message() {
 }
 
 #[tokio::test]
+async fn slack_webhook_can_dispatch_outbound_reply() {
+    let (relay_addr, relay_shutdown_tx, relay_join, mut relay_rx) =
+        spawn_outbound_capture("/slack").await;
+    let server = spawn_server_with(AuthMode::None, |config| {
+        config.slack_webhook_token = Some("slack-token".to_owned());
+        config.slack_outbound_url = Some(format!("http://{relay_addr}/slack"));
+        config.slack_outbound_token = Some("relay-token".to_owned());
+    })
+    .await;
+
+    let client = reqwest::Client::new();
+    let response = client
+        .post(format!("http://{}/channels/slack/webhook", server.addr))
+        .bearer_auth("slack-token")
+        .json(&json!({
+            "type": "event_callback",
+            "event_id": "Ev-outbound-1",
+            "event": {
+                "type": "message",
+                "channel": "C-outbound",
+                "user": "U-outbound",
+                "text": "please relay",
+                "ts": "333.444"
+            }
+        }))
+        .send()
+        .await
+        .expect("slack webhook should return");
+
+    assert!(response.status().is_success());
+    let payload: Value = response.json().await.expect("response should be json");
+    assert_eq!(payload["ok"], true);
+    assert_eq!(payload["outboundSent"], true);
+
+    let outbound = timeout(std::time::Duration::from_secs(2), relay_rx.recv())
+        .await
+        .expect("slack outbound request should arrive")
+        .expect("outbound payload should exist");
+    assert_eq!(outbound.0.as_deref(), Some("Bearer relay-token"));
+    assert_eq!(outbound.1["channel"], "slack");
+    assert_eq!(outbound.1["conversationId"], "C-outbound");
+    assert!(
+        outbound.1["reply"]
+            .as_str()
+            .is_some_and(|text| text.contains("Echo:"))
+    );
+
+    let _ = relay_shutdown_tx.send(());
+    let _ = relay_join.await;
+    server.stop().await;
+}
+
+#[tokio::test]
 async fn discord_webhook_ingests_message_payload() {
     let server = spawn_server_with(AuthMode::None, |config| {
         config.discord_webhook_token = Some("discord-token".to_owned());
@@ -574,6 +676,54 @@ async fn discord_webhook_ingests_message_payload() {
         .to_owned();
     assert_session_has_history(server.addr, &session_key).await;
 
+    server.stop().await;
+}
+
+#[tokio::test]
+async fn discord_webhook_can_dispatch_outbound_reply() {
+    let (relay_addr, relay_shutdown_tx, relay_join, mut relay_rx) =
+        spawn_outbound_capture("/discord").await;
+    let server = spawn_server_with(AuthMode::None, |config| {
+        config.discord_webhook_token = Some("discord-token".to_owned());
+        config.discord_outbound_url = Some(format!("http://{relay_addr}/discord"));
+        config.discord_outbound_token = Some("relay-token".to_owned());
+    })
+    .await;
+
+    let client = reqwest::Client::new();
+    let response = client
+        .post(format!("http://{}/channels/discord/webhook", server.addr))
+        .bearer_auth("discord-token")
+        .json(&json!({
+            "id": "discord-outbound-1",
+            "channel_id": "discord-channel",
+            "content": "please relay",
+            "author": { "id": "discord-user" }
+        }))
+        .send()
+        .await
+        .expect("discord webhook should return");
+
+    assert!(response.status().is_success());
+    let payload: Value = response.json().await.expect("response should be json");
+    assert_eq!(payload["ok"], true);
+    assert_eq!(payload["outboundSent"], true);
+
+    let outbound = timeout(std::time::Duration::from_secs(2), relay_rx.recv())
+        .await
+        .expect("discord outbound request should arrive")
+        .expect("outbound payload should exist");
+    assert_eq!(outbound.0.as_deref(), Some("Bearer relay-token"));
+    assert_eq!(outbound.1["channel"], "discord");
+    assert_eq!(outbound.1["conversationId"], "discord-channel");
+    assert!(
+        outbound.1["reply"]
+            .as_str()
+            .is_some_and(|text| text.contains("Echo:"))
+    );
+
+    let _ = relay_shutdown_tx.send(());
+    let _ = relay_join.await;
     server.stop().await;
 }
 
@@ -616,6 +766,57 @@ async fn signal_webhook_ingests_envelope_payload() {
 }
 
 #[tokio::test]
+async fn signal_webhook_can_dispatch_outbound_reply() {
+    let (relay_addr, relay_shutdown_tx, relay_join, mut relay_rx) =
+        spawn_outbound_capture("/signal").await;
+    let server = spawn_server_with(AuthMode::None, |config| {
+        config.signal_webhook_token = Some("signal-token".to_owned());
+        config.signal_outbound_url = Some(format!("http://{relay_addr}/signal"));
+        config.signal_outbound_token = Some("relay-token".to_owned());
+    })
+    .await;
+
+    let client = reqwest::Client::new();
+    let response = client
+        .post(format!("http://{}/channels/signal/webhook", server.addr))
+        .bearer_auth("signal-token")
+        .json(&json!({
+            "envelope": {
+                "sourceNumber": "+1987654321",
+                "timestamp": 1700000012,
+                "dataMessage": {
+                    "message": "please relay"
+                }
+            }
+        }))
+        .send()
+        .await
+        .expect("signal webhook should return");
+
+    assert!(response.status().is_success());
+    let payload: Value = response.json().await.expect("response should be json");
+    assert_eq!(payload["ok"], true);
+    assert_eq!(payload["outboundSent"], true);
+
+    let outbound = timeout(std::time::Duration::from_secs(2), relay_rx.recv())
+        .await
+        .expect("signal outbound request should arrive")
+        .expect("outbound payload should exist");
+    assert_eq!(outbound.0.as_deref(), Some("Bearer relay-token"));
+    assert_eq!(outbound.1["channel"], "signal");
+    assert_eq!(outbound.1["conversationId"], "+1987654321");
+    assert!(
+        outbound.1["reply"]
+            .as_str()
+            .is_some_and(|text| text.contains("Echo:"))
+    );
+
+    let _ = relay_shutdown_tx.send(());
+    let _ = relay_join.await;
+    server.stop().await;
+}
+
+#[tokio::test]
 async fn whatsapp_webhook_ingests_cloud_payload() {
     let server = spawn_server_with(AuthMode::None, |config| {
         config.whatsapp_webhook_token = Some("whatsapp-token".to_owned());
@@ -654,5 +855,60 @@ async fn whatsapp_webhook_ingests_cloud_payload() {
         .to_owned();
     assert_session_has_history(server.addr, &session_key).await;
 
+    server.stop().await;
+}
+
+#[tokio::test]
+async fn whatsapp_webhook_can_dispatch_outbound_reply() {
+    let (relay_addr, relay_shutdown_tx, relay_join, mut relay_rx) =
+        spawn_outbound_capture("/whatsapp").await;
+    let server = spawn_server_with(AuthMode::None, |config| {
+        config.whatsapp_webhook_token = Some("whatsapp-token".to_owned());
+        config.whatsapp_outbound_url = Some(format!("http://{relay_addr}/whatsapp"));
+        config.whatsapp_outbound_token = Some("relay-token".to_owned());
+    })
+    .await;
+
+    let client = reqwest::Client::new();
+    let response = client
+        .post(format!("http://{}/channels/whatsapp/webhook", server.addr))
+        .bearer_auth("whatsapp-token")
+        .json(&json!({
+            "entry": [{
+                "changes": [{
+                    "value": {
+                        "messages": [{
+                            "id": "wamid.outbound",
+                            "from": "15557654321",
+                            "text": { "body": "please relay" }
+                        }]
+                    }
+                }]
+            }]
+        }))
+        .send()
+        .await
+        .expect("whatsapp webhook should return");
+
+    assert!(response.status().is_success());
+    let payload: Value = response.json().await.expect("response should be json");
+    assert_eq!(payload["ok"], true);
+    assert_eq!(payload["outboundSent"], true);
+
+    let outbound = timeout(std::time::Duration::from_secs(2), relay_rx.recv())
+        .await
+        .expect("whatsapp outbound request should arrive")
+        .expect("outbound payload should exist");
+    assert_eq!(outbound.0.as_deref(), Some("Bearer relay-token"));
+    assert_eq!(outbound.1["channel"], "whatsapp");
+    assert_eq!(outbound.1["conversationId"], "15557654321");
+    assert!(
+        outbound.1["reply"]
+            .as_str()
+            .is_some_and(|text| text.contains("Echo:"))
+    );
+
+    let _ = relay_shutdown_tx.send(());
+    let _ = relay_join.await;
     server.stop().await;
 }
