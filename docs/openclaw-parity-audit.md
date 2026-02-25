@@ -41,7 +41,8 @@ Scope compared: `openclaw/src/gateway/**` and `openclaw/src/channels/plugins/**`
 - Current Rust status:
   - `/hooks/wake` and `/hooks/agent` are implemented with auth + base policies.
   - static path-based mappings are implemented (`hooksMappings`) for `wake` and `agent` actions.
-  - advanced template rendering, transform modules, and source match filters are not implemented yet.
+  - mapping `matchSource`, `messageTemplate`, and `textTemplate` are implemented.
+  - transform modules and header/URL context mapping are not implemented yet.
 
 3. Plugin/channel runtime parity (dynamic channel plugin system).
 - OpenClaw references:

@@ -186,10 +186,10 @@ async fn handle_request(
             dispatch_agent(state, normalized, HookSessionKeySource::Request).await
         }
         _ => {
-            let Some(mapped) = resolve_mapping(&state, normalized_subpath) else {
+            let Some(mapped) = resolve_mapping(&state, normalized_subpath, &payload) else {
                 return error_response(StatusCode::NOT_FOUND, "NOT_FOUND", "not found");
             };
-            dispatch_mapping(state, mapped).await
+            dispatch_mapping(state, mapped, &payload).await
         }
     }
 }
@@ -338,10 +338,11 @@ async fn dispatch_agent(
 async fn dispatch_mapping(
     state: SharedState,
     mapping: HookMappingConfig,
+    payload: &Map<String, Value>,
 ) -> (StatusCode, Json<Value>) {
     match mapping.action {
         HookMappingAction::Wake => {
-            let text = trim_non_empty(mapping.text.clone())
+            let text = trim_non_empty(resolve_mapped_text(&mapping, payload))
                 .ok_or_else(|| "hook mapping requires text".to_owned());
             let text = match text {
                 Ok(value) => value,
@@ -356,7 +357,7 @@ async fn dispatch_mapping(
             dispatch_wake(state, wake).await
         }
         HookMappingAction::Agent => {
-            let message = trim_non_empty(mapping.message.clone())
+            let message = trim_non_empty(resolve_mapped_message(&mapping, payload))
                 .ok_or_else(|| "hook mapping requires message".to_owned());
             let message = match message {
                 Ok(value) => value,
@@ -376,14 +377,37 @@ async fn dispatch_mapping(
     }
 }
 
-fn resolve_mapping(state: &SharedState, subpath: &str) -> Option<HookMappingConfig> {
+fn resolve_mapping(
+    state: &SharedState,
+    subpath: &str,
+    payload: &Map<String, Value>,
+) -> Option<HookMappingConfig> {
     let target = normalize_mapping_path(subpath);
     state
         .config()
         .hooks_mappings
         .iter()
-        .find(|mapping| normalize_mapping_path(&mapping.path) == target)
+        .find(|mapping| mapping_matches(mapping, &target, payload))
         .cloned()
+}
+
+fn mapping_matches(
+    mapping: &HookMappingConfig,
+    target_path: &str,
+    payload: &Map<String, Value>,
+) -> bool {
+    if normalize_mapping_path(&mapping.path) != target_path {
+        return false;
+    }
+
+    let Some(match_source) = trim_non_empty(mapping.match_source.clone()) else {
+        return true;
+    };
+    payload
+        .get("source")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .is_some_and(|source| source == match_source)
 }
 
 fn normalize_mapping_path(path: &str) -> String {
@@ -393,6 +417,114 @@ fn normalize_mapping_path(path: &str) -> String {
         .filter(|segment| !segment.trim().is_empty())
         .collect::<Vec<_>>()
         .join("/")
+}
+
+fn resolve_mapped_text(
+    mapping: &HookMappingConfig,
+    payload: &Map<String, Value>,
+) -> Option<String> {
+    if let Some(template) = trim_non_empty(mapping.text_template.clone()) {
+        return Some(render_template(&template, payload));
+    }
+    mapping.text.clone()
+}
+
+fn resolve_mapped_message(
+    mapping: &HookMappingConfig,
+    payload: &Map<String, Value>,
+) -> Option<String> {
+    if let Some(template) = trim_non_empty(mapping.message_template.clone()) {
+        return Some(render_template(&template, payload));
+    }
+    mapping.message.clone()
+}
+
+fn render_template(template: &str, payload: &Map<String, Value>) -> String {
+    let mut out = String::new();
+    let mut cursor = 0usize;
+    while let Some(open_rel) = template[cursor..].find("{{") {
+        let open = cursor + open_rel;
+        out.push_str(&template[cursor..open]);
+        let value_start = open + 2;
+        let Some(close_rel) = template[value_start..].find("}}") else {
+            out.push_str(&template[open..]);
+            return out;
+        };
+        let close = value_start + close_rel;
+        let expr = template[value_start..close].trim();
+        out.push_str(&resolve_template_expr(payload, expr));
+        cursor = close + 2;
+    }
+    out.push_str(&template[cursor..]);
+    out
+}
+
+fn resolve_template_expr(payload: &Map<String, Value>, expr: &str) -> String {
+    let segments = parse_template_segments(expr);
+    let mut segments_iter = segments.into_iter();
+    let Some(first) = segments_iter.next() else {
+        return String::new();
+    };
+
+    let mut cursor = match first {
+        TemplateSegment::Key(key) => payload.get(&key),
+        TemplateSegment::Index(_) => None,
+    };
+
+    for segment in segments_iter {
+        let Some(value) = cursor else {
+            return String::new();
+        };
+        cursor = match segment {
+            TemplateSegment::Key(key) => value.get(&key),
+            TemplateSegment::Index(index) => value.get(index),
+        };
+    }
+    let Some(value) = cursor else {
+        return String::new();
+    };
+
+    if let Some(value) = value.as_str() {
+        return value.to_owned();
+    }
+    if value.is_number() || value.is_boolean() {
+        return value.to_string();
+    }
+    serde_json::to_string(value).unwrap_or_default()
+}
+
+#[derive(Debug, Clone)]
+enum TemplateSegment {
+    Key(String),
+    Index(usize),
+}
+
+fn parse_template_segments(path: &str) -> Vec<TemplateSegment> {
+    let mut segments = Vec::new();
+    for part in path.split('.').filter(|part| !part.trim().is_empty()) {
+        let mut remainder = part.trim();
+        while !remainder.is_empty() {
+            if let Some(open) = remainder.find('[') {
+                let key = remainder[..open].trim();
+                if !key.is_empty() {
+                    segments.push(TemplateSegment::Key(key.to_owned()));
+                }
+                let Some(close) = remainder[open + 1..].find(']') else {
+                    break;
+                };
+                let index_raw = remainder[open + 1..open + 1 + close].trim();
+                if let Ok(index) = index_raw.parse::<usize>() {
+                    segments.push(TemplateSegment::Index(index));
+                }
+                let next = open + 1 + close + 1;
+                remainder = &remainder[next..];
+            } else {
+                segments.push(TemplateSegment::Key(remainder.to_owned()));
+                break;
+            }
+        }
+    }
+    segments
 }
 
 fn normalize_wake_payload(payload: &Map<String, Value>) -> Result<HookWakeNormalized, String> {
@@ -544,7 +676,7 @@ fn error_response(
 mod tests {
     use super::{
         HOOKS_SESSION_POLICY_ERROR, HookSessionKeySource, has_token_query, normalize_mapping_path,
-        resolve_session_key_policy,
+        render_template, resolve_session_key_policy,
     };
     use crate::application::config::RuntimeConfig;
 
@@ -577,5 +709,20 @@ mod tests {
     fn normalize_mapping_path_trims_and_collapses_slashes() {
         assert_eq!(normalize_mapping_path("/github/push/"), "github/push");
         assert_eq!(normalize_mapping_path("  github//push  "), "github/push");
+    }
+
+    #[test]
+    fn render_template_resolves_nested_payload_paths() {
+        let payload = serde_json::json!({
+            "repo": "reclaw",
+            "actor": { "name": "jd" },
+            "commits": [{ "id": "c1" }]
+        });
+        let payload = payload.as_object().cloned().unwrap_or_default();
+        let rendered = render_template(
+            "repo={{repo}} actor={{actor.name}} first={{commits[0].id}}",
+            &payload,
+        );
+        assert_eq!(rendered, "repo=reclaw actor=jd first=c1");
     }
 }

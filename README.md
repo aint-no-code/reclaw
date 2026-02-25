@@ -164,6 +164,7 @@ OpenClaw-compatible `/hooks/*` ingress is available behind explicit config:
 - `hooksDefaultSessionKey` / `RECLAW_HOOKS_DEFAULT_SESSION_KEY` (optional)
 - `hooksDefaultAgentId` / `RECLAW_HOOKS_DEFAULT_AGENT_ID` (default `main`)
 - `hooksMappings` (static config array for path-based mapped actions)
+  - supports `matchSource`, `messageTemplate`, and `textTemplate`
 
 Supported routes once enabled:
 

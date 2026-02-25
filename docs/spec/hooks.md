@@ -77,19 +77,22 @@ Example:
 [[hooksMappings]]
 path = "github/push"
 action = "agent"
-message = "new github event"
+matchSource = "github"
+messageTemplate = "repo={{repo}} actor={{actor.name}}"
 sessionKey = "hook:github"
 
 [[hooksMappings]]
 path = "watchdog/ping"
 action = "wake"
-text = "watchdog ping"
+textTemplate = "watchdog ping {{source}}"
 wakeMode = "next-heartbeat"
 ```
 
 Rules:
 
 - mapping path compare is normalized (`/` trimming and slash collapsing)
-- `action = "agent"` requires `message`
-- `action = "wake"` requires `text`
+- `matchSource` filters on payload `source`
+- `action = "agent"` requires `message` or `messageTemplate`
+- `action = "wake"` requires `text` or `textTemplate`
+- `messageTemplate` / `textTemplate` support `{{path}}` interpolation from payload JSON
 - mapping-provided `sessionKey` is allowed regardless of `hooksAllowRequestSessionKey`

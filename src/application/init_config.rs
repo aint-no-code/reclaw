@@ -219,7 +219,9 @@ dbPath = \"{}\"\n\
 # [[hooksMappings]]\n\
 # path = \"github/push\"\n\
 # action = \"agent\" # or \"wake\"\n\
+# matchSource = \"github\"\n\
 # message = \"new github event\"\n\
+# messageTemplate = \"Repo {{repo}} update\"\n\
 # sessionKey = \"hook:github\"\n\
 # agentId = \"main\"\n\
 \n\

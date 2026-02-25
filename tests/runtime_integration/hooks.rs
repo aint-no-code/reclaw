@@ -37,6 +37,39 @@ async fn assert_session_has_history(server_addr: std::net::SocketAddr, session_k
     );
 }
 
+async fn session_history_texts(
+    server_addr: std::net::SocketAddr,
+    session_key: &str,
+) -> Vec<String> {
+    let mut ws = connect_gateway(server_addr).await;
+    ws.send(Message::Text(
+        connect_frame(None, 1, PROTOCOL_VERSION, "operator", "reclaw-test", &[])
+            .to_string()
+            .into(),
+    ))
+    .await
+    .expect("connect frame should send");
+    let _ = recv_json(&mut ws).await;
+
+    let history = rpc_req(
+        &mut ws,
+        "history-texts-1",
+        "chat.history",
+        Some(json!({
+            "sessionKey": session_key,
+            "limit": 20
+        })),
+    )
+    .await;
+    history["payload"]["messages"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|entry| entry.get("text").and_then(Value::as_str).map(str::to_owned))
+        .collect()
+}
+
 #[tokio::test]
 async fn hooks_routes_are_disabled_by_default() {
     let server = spawn_server_with(AuthMode::None, |_| {}).await;
@@ -254,9 +287,12 @@ async fn hooks_mapping_dispatches_agent_action() {
             id: Some("github".to_owned()),
             path: "github/push".to_owned(),
             action: HookMappingAction::Agent,
+            match_source: None,
             wake_mode: None,
             text: None,
+            text_template: None,
             message: Some("mapped github event".to_owned()),
+            message_template: None,
             name: Some("GitHub".to_owned()),
             agent_id: Some("mapped-agent".to_owned()),
             session_key: Some("hook:mapped".to_owned()),
@@ -297,9 +333,12 @@ async fn hooks_mapping_dispatches_wake_action() {
             id: Some("watchdog".to_owned()),
             path: "/watchdog/ping/".to_owned(),
             action: HookMappingAction::Wake,
+            match_source: None,
             wake_mode: Some("next-heartbeat".to_owned()),
             text: Some("watchdog ping".to_owned()),
+            text_template: None,
             message: None,
+            message_template: None,
             name: None,
             agent_id: None,
             session_key: None,
@@ -320,6 +359,104 @@ async fn hooks_mapping_dispatches_wake_action() {
     let payload: Value = response.json().await.expect("response should be json");
     assert_eq!(payload["ok"], true);
     assert_eq!(payload["mode"], "next-heartbeat");
+
+    server.stop().await;
+}
+
+#[tokio::test]
+async fn hooks_mapping_honors_match_source_filter() {
+    let server = spawn_server_with(AuthMode::None, |config| {
+        config.hooks_enabled = true;
+        config.hooks_token = Some("hooks-token".to_owned());
+        config.hooks_mappings = vec![HookMappingConfig {
+            id: Some("source-filter".to_owned()),
+            path: "events/source".to_owned(),
+            action: HookMappingAction::Agent,
+            match_source: Some("github".to_owned()),
+            wake_mode: None,
+            text: None,
+            text_template: None,
+            message: Some("source matched".to_owned()),
+            message_template: None,
+            name: None,
+            agent_id: None,
+            session_key: Some("hook:source-filter".to_owned()),
+        }];
+    })
+    .await;
+
+    let client = reqwest::Client::new();
+    let rejected = client
+        .post(format!("http://{}/hooks/events/source", server.addr))
+        .bearer_auth("hooks-token")
+        .json(&json!({
+            "source": "slack",
+        }))
+        .send()
+        .await
+        .expect("hooks request should return");
+    assert_eq!(rejected.status(), reqwest::StatusCode::NOT_FOUND);
+
+    let accepted = client
+        .post(format!("http://{}/hooks/events/source", server.addr))
+        .bearer_auth("hooks-token")
+        .json(&json!({
+            "source": "github",
+        }))
+        .send()
+        .await
+        .expect("hooks request should return");
+    assert_eq!(accepted.status(), reqwest::StatusCode::ACCEPTED);
+
+    assert_session_has_history(server.addr, "hook:source-filter").await;
+    server.stop().await;
+}
+
+#[tokio::test]
+async fn hooks_mapping_renders_message_template_from_payload() {
+    let server = spawn_server_with(AuthMode::None, |config| {
+        config.hooks_enabled = true;
+        config.hooks_token = Some("hooks-token".to_owned());
+        config.hooks_mappings = vec![HookMappingConfig {
+            id: Some("template".to_owned()),
+            path: "github/template".to_owned(),
+            action: HookMappingAction::Agent,
+            match_source: None,
+            wake_mode: None,
+            text: None,
+            text_template: None,
+            message: None,
+            message_template: Some(
+                "repo={{repo}} actor={{actor.name}} first={{commits[0].id}}".to_owned(),
+            ),
+            name: None,
+            agent_id: None,
+            session_key: Some("hook:template".to_owned()),
+        }];
+    })
+    .await;
+
+    let client = reqwest::Client::new();
+    let response = client
+        .post(format!("http://{}/hooks/github/template", server.addr))
+        .bearer_auth("hooks-token")
+        .json(&json!({
+            "repo": "reclaw",
+            "actor": { "name": "jd" },
+            "commits": [{ "id": "c1" }]
+        }))
+        .send()
+        .await
+        .expect("hooks request should return");
+
+    assert_eq!(response.status(), reqwest::StatusCode::ACCEPTED);
+
+    let history_texts = session_history_texts(server.addr, "hook:template").await;
+    assert!(
+        history_texts
+            .iter()
+            .any(|text| text.contains("repo=reclaw actor=jd first=c1"))
+    );
 
     server.stop().await;
 }

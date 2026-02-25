@@ -226,11 +226,17 @@ pub struct HookMappingConfig {
     #[serde(default)]
     pub action: HookMappingAction,
     #[serde(default)]
+    pub match_source: Option<String>,
+    #[serde(default)]
     pub wake_mode: Option<String>,
     #[serde(default)]
     pub text: Option<String>,
     #[serde(default)]
+    pub text_template: Option<String>,
+    #[serde(default)]
     pub message: Option<String>,
+    #[serde(default)]
+    pub message_template: Option<String>,
     #[serde(default)]
     pub name: Option<String>,
     #[serde(default)]
@@ -1093,7 +1099,7 @@ mod tests {
         let config_path = temp_dir.path().join("config.toml");
         fs::write(
             &config_path,
-            "hooksEnabled = true\nhooksToken = \"hooks-token\"\n[[hooksMappings]]\npath = \"github/push\"\naction = \"agent\"\nmessage = \"mapped message\"\nsessionKey = \"hook:mapped\"\nagentId = \"ops\"\n[[hooksMappings]]\npath = \"watchdog\"\naction = \"wake\"\ntext = \"ping\"\nwakeMode = \"next-heartbeat\"\n",
+            "hooksEnabled = true\nhooksToken = \"hooks-token\"\n[[hooksMappings]]\npath = \"github/push\"\naction = \"agent\"\nmatchSource = \"github\"\nmessageTemplate = \"repo={{repo}}\"\nsessionKey = \"hook:mapped\"\nagentId = \"ops\"\n[[hooksMappings]]\npath = \"watchdog\"\naction = \"wake\"\ntextTemplate = \"ping {{source}}\"\nwakeMode = \"next-heartbeat\"\n",
         )
         .expect("config should write");
 
@@ -1103,7 +1109,19 @@ mod tests {
         let runtime = RuntimeConfig::from_args(args).expect("runtime config should build");
         assert_eq!(runtime.hooks_mappings.len(), 2);
         assert_eq!(runtime.hooks_mappings[0].path, "github/push");
+        assert_eq!(
+            runtime.hooks_mappings[0].message_template.as_deref(),
+            Some("repo={{repo}}")
+        );
+        assert_eq!(
+            runtime.hooks_mappings[0].match_source.as_deref(),
+            Some("github")
+        );
         assert_eq!(runtime.hooks_mappings[1].path, "watchdog");
+        assert_eq!(
+            runtime.hooks_mappings[1].text_template.as_deref(),
+            Some("ping {{source}}")
+        );
     }
 
     #[test]
