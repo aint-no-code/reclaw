@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
 
@@ -35,13 +37,16 @@ pub async fn handle_status(
     let parsed: ChannelsStatusParams = parse_optional_params("channels.status", params)?;
     let include_disabled = parsed.include_disabled.unwrap_or(true);
 
-    let current = state
+    let persisted = state
         .get_config_entry_value(CHANNELS_STATUS_KEY)
         .await
         .map_err(map_domain_error)?
-        .unwrap_or_else(default_channels_status);
+        .unwrap_or(Value::Array(Vec::new()));
 
-    let mut channels = as_channel_array(current);
+    let mut channels = merge_channel_entries(
+        configured_default_channels(state.config()),
+        as_channel_array(persisted),
+    );
     if !include_disabled {
         channels.retain(|item| {
             item.get("connected")
@@ -77,8 +82,9 @@ pub async fn handle_logout(
             .get_config_entry_value(CHANNELS_STATUS_KEY)
             .await
             .map_err(map_domain_error)?
-            .unwrap_or_else(default_channels_status),
+            .unwrap_or(Value::Array(Vec::new())),
     );
+    channels = merge_channel_entries(configured_default_channels(state.config()), channels);
 
     let mut matched = false;
     for channel in &mut channels {
@@ -118,19 +124,124 @@ pub async fn handle_logout(
     }))
 }
 
-fn default_channels_status() -> Value {
-    Value::Array(vec![
+fn configured_default_channels(config: &crate::application::config::RuntimeConfig) -> Vec<Value> {
+    let mut channels = BTreeMap::<String, Value>::new();
+    channels.insert(
+        "webchat".to_owned(),
         json!({
             "id": "webchat",
             "connected": true,
             "kind": "internal",
         }),
+    );
+    channels.insert(
+        "node".to_owned(),
         json!({
             "id": "node",
             "connected": true,
             "kind": "gateway",
         }),
-    ])
+    );
+
+    if config.telegram_webhook_secret.is_some() {
+        channels.insert(
+            "telegram".to_owned(),
+            json!({
+                "id": "telegram",
+                "connected": true,
+                "kind": "adapter",
+            }),
+        );
+    }
+    if config.discord_webhook_token.is_some() {
+        channels.insert(
+            "discord".to_owned(),
+            json!({
+                "id": "discord",
+                "connected": true,
+                "kind": "adapter",
+            }),
+        );
+    }
+    if config.slack_webhook_token.is_some() {
+        channels.insert(
+            "slack".to_owned(),
+            json!({
+                "id": "slack",
+                "connected": true,
+                "kind": "adapter",
+            }),
+        );
+    }
+    if config.signal_webhook_token.is_some() {
+        channels.insert(
+            "signal".to_owned(),
+            json!({
+                "id": "signal",
+                "connected": true,
+                "kind": "adapter",
+            }),
+        );
+    }
+    if config.whatsapp_webhook_token.is_some() {
+        channels.insert(
+            "whatsapp".to_owned(),
+            json!({
+                "id": "whatsapp",
+                "connected": true,
+                "kind": "adapter",
+            }),
+        );
+    }
+    for channel_id in config.channel_webhook_plugins.keys() {
+        channels.entry(channel_id.clone()).or_insert_with(|| {
+            json!({
+                "id": channel_id,
+                "connected": true,
+                "kind": "plugin",
+            })
+        });
+    }
+
+    channels.into_values().collect()
+}
+
+fn merge_channel_entries(defaults: Vec<Value>, overrides: Vec<Value>) -> Vec<Value> {
+    let mut merged = BTreeMap::<String, Value>::new();
+    for entry in defaults {
+        if let Some(id) = channel_id(&entry) {
+            merged.insert(id, entry);
+        }
+    }
+
+    for entry in overrides {
+        let Some(id) = channel_id(&entry) else {
+            continue;
+        };
+
+        match (merged.remove(&id), entry) {
+            (Some(Value::Object(mut base)), Value::Object(overlay)) => {
+                for (key, value) in overlay {
+                    base.insert(key, value);
+                }
+                merged.insert(id, Value::Object(base));
+            }
+            (_, value) => {
+                merged.insert(id, value);
+            }
+        }
+    }
+
+    merged.into_values().collect()
+}
+
+fn channel_id(entry: &Value) -> Option<String> {
+    entry
+        .get("id")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
 }
 
 fn as_channel_array(value: Value) -> Vec<Value> {
@@ -167,7 +278,9 @@ fn trim_non_empty(value: String) -> Option<String> {
 mod tests {
     use serde_json::json;
 
-    use super::as_channel_array;
+    use crate::application::config::{ChannelWebhookPluginConfig, RuntimeConfig};
+
+    use super::{as_channel_array, configured_default_channels, merge_channel_entries};
 
     #[test]
     fn channel_array_supports_object_shape() {
@@ -178,5 +291,52 @@ mod tests {
 
         let items = as_channel_array(value);
         assert_eq!(items.len(), 2);
+    }
+
+    #[test]
+    fn configured_default_channels_include_plugin_entries() {
+        let mut config = RuntimeConfig::for_test(
+            std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST),
+            18_789,
+            std::path::PathBuf::from(":memory:"),
+        );
+        config.slack_webhook_token = Some("slack-token".to_owned());
+        config.channel_webhook_plugins.insert(
+            "extchat".to_owned(),
+            ChannelWebhookPluginConfig {
+                url: "http://127.0.0.1:4900/webhook".to_owned(),
+                token: None,
+                timeout_ms: Some(3_000),
+            },
+        );
+
+        let items = configured_default_channels(&config);
+        assert!(items.iter().any(|entry| entry["id"] == "slack"
+            && entry["kind"] == "adapter"
+            && entry["connected"] == true));
+        assert!(items.iter().any(|entry| entry["id"] == "extchat"
+            && entry["kind"] == "plugin"
+            && entry["connected"] == true));
+    }
+
+    #[test]
+    fn merge_channel_entries_preserves_default_fields() {
+        let defaults = vec![json!({
+            "id": "slack",
+            "connected": true,
+            "kind": "adapter",
+        })];
+        let overrides = vec![json!({
+            "id": "slack",
+            "connected": false,
+            "loggedOutAtMs": 123,
+        })];
+
+        let merged = merge_channel_entries(defaults, overrides);
+        assert_eq!(merged.len(), 1);
+        assert_eq!(merged[0]["id"], "slack");
+        assert_eq!(merged[0]["kind"], "adapter");
+        assert_eq!(merged[0]["connected"], false);
+        assert_eq!(merged[0]["loggedOutAtMs"], 123);
     }
 }

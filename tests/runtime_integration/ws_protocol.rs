@@ -1,10 +1,12 @@
 use futures_util::SinkExt;
-use reclaw_core::application::config::AuthMode;
+use reclaw_core::application::config::{AuthMode, ChannelWebhookPluginConfig};
 use reclaw_core::protocol::PROTOCOL_VERSION;
 use serde_json::json;
 use tokio_tungstenite::tungstenite::Message;
 
-use super::support::{connect_frame, connect_gateway, recv_json, rpc_req, spawn_server};
+use super::support::{
+    connect_frame, connect_gateway, recv_json, rpc_req, spawn_server, spawn_server_with,
+};
 
 #[tokio::test]
 async fn handshake_and_health_round_trip() {
@@ -451,7 +453,17 @@ async fn operator_cannot_call_node_role_methods() {
 
 #[tokio::test]
 async fn extended_method_groups_round_trip() {
-    let server = spawn_server(AuthMode::None).await;
+    let server = spawn_server_with(AuthMode::None, |config| {
+        config.channel_webhook_plugins.insert(
+            "extchat".to_owned(),
+            ChannelWebhookPluginConfig {
+                url: "http://127.0.0.1:4900/plugin".to_owned(),
+                token: Some("plugin-token".to_owned()),
+                timeout_ms: Some(3_000),
+            },
+        );
+    })
+    .await;
     let mut ws = connect_gateway(server.addr).await;
 
     ws.send(Message::Text(
@@ -469,6 +481,13 @@ async fn extended_method_groups_round_trip() {
 
     let channels = rpc_req(&mut ws, "ext-2", "channels.status", Some(json!({}))).await;
     assert_eq!(channels["ok"], true);
+    assert!(
+        channels["payload"]["channels"]
+            .as_array()
+            .is_some_and(|items| items
+                .iter()
+                .any(|item| item["id"] == "extchat" && item["kind"] == "plugin"))
+    );
 
     let logout = rpc_req(
         &mut ws,

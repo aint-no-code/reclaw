@@ -54,6 +54,7 @@ Scope compared: `openclaw/src/gateway/**` and `openclaw/src/channels/plugins/**`
   - Core supports plugin-owned webhook route dispatch via static `channelWebhookPlugins`
     HTTP bridge fallback on `POST /channels/{channel}/webhook`.
   - In-process registry injection remains supported for compiled adapters.
+  - `channels.status` now includes configured plugin channels and merges persisted logout state.
   - Plugin account lifecycle and dynamic process/plugin loader parity are still not implemented.
 
 ## P1 (high-impact platform parity)

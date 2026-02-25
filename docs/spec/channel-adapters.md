@@ -65,6 +65,7 @@ Bridge behavior:
   - `x-reclaw-plugin-token: <token>` when configured.
 - Plugin response status and JSON body are passed through to caller.
 - Non-JSON plugin responses are rejected with `502 BAD_GATEWAY`.
+- `channels.status` includes configured plugin channels (`kind = "plugin"`) and reflects persisted logout state.
 
 ## Adapter Rules
 
