@@ -1,7 +1,13 @@
 use std::{future::Future, net::SocketAddr};
 
 use axum::routing::post;
-use axum::{Json, Router, extract::State, http::StatusCode, response::IntoResponse, routing::get};
+use axum::{
+    Json, Router,
+    extract::{Extension, State},
+    http::StatusCode,
+    response::IntoResponse,
+    routing::get,
+};
 use tokio::net::TcpListener;
 use tracing::info;
 
@@ -13,6 +19,13 @@ use crate::{
 };
 
 pub fn build_router(state: SharedState) -> Router {
+    build_router_with_webhooks(state, webhooks::default_registry())
+}
+
+pub fn build_router_with_webhooks(
+    state: SharedState,
+    webhook_registry: webhooks::ChannelWebhookRegistry,
+) -> Router {
     let mut router = Router::new()
         .route("/", get(ws::ws_handler))
         .route("/ws", get(ws::ws_handler))
@@ -31,7 +44,8 @@ pub fn build_router(state: SharedState) -> Router {
         .route(
             "/channels/{channel}/webhook",
             post(webhooks::channel_webhook_handler),
-        );
+        )
+        .layer(Extension(webhook_registry));
 
     if state.config().openai_chat_completions_enabled {
         router = router.route(

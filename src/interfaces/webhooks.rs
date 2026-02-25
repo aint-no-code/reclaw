@@ -1,8 +1,8 @@
-use std::{future::Future, pin::Pin};
+use std::{collections::HashMap, future::Future, pin::Pin};
 
 use axum::{
     Json,
-    extract::{Path, State},
+    extract::{Extension, Path, State},
     http::{HeaderMap, StatusCode},
     response::IntoResponse,
 };
@@ -12,29 +12,58 @@ use crate::application::state::SharedState;
 
 use super::telegram;
 
-type WebhookFuture<'a> = Pin<Box<dyn Future<Output = (StatusCode, Json<Value>)> + Send + 'a>>;
-type WebhookDispatchFn = for<'a> fn(&'a SharedState, &'a HeaderMap, Value) -> WebhookFuture<'a>;
+pub type WebhookFuture<'a> = Pin<Box<dyn Future<Output = (StatusCode, Json<Value>)> + Send + 'a>>;
+pub type WebhookDispatchFn = for<'a> fn(&'a SharedState, &'a HeaderMap, Value) -> WebhookFuture<'a>;
 
 #[derive(Clone, Copy)]
-struct ChannelWebhookAdapter {
-    channel: &'static str,
-    dispatch: WebhookDispatchFn,
+pub struct ChannelWebhookAdapter {
+    pub channel: &'static str,
+    pub dispatch: WebhookDispatchFn,
 }
 
-const TELEGRAM_ADAPTER: ChannelWebhookAdapter = ChannelWebhookAdapter {
+pub const TELEGRAM_ADAPTER: ChannelWebhookAdapter = ChannelWebhookAdapter {
     channel: "telegram",
     dispatch: telegram::dispatch_webhook,
 };
 
-const ADAPTERS: &[ChannelWebhookAdapter] = &[TELEGRAM_ADAPTER];
+#[derive(Clone, Default)]
+pub struct ChannelWebhookRegistry {
+    adapters: HashMap<String, WebhookDispatchFn>,
+}
+
+impl ChannelWebhookRegistry {
+    #[must_use]
+    pub fn with_adapters(adapters: &[ChannelWebhookAdapter]) -> Self {
+        let mut registry = Self::default();
+        for adapter in adapters {
+            registry.register(*adapter);
+        }
+        registry
+    }
+
+    pub fn register(&mut self, adapter: ChannelWebhookAdapter) {
+        self.adapters
+            .insert(adapter.channel.to_owned(), adapter.dispatch);
+    }
+
+    fn adapter_for(&self, channel: &str) -> Option<WebhookDispatchFn> {
+        self.adapters.get(channel).copied()
+    }
+}
+
+#[must_use]
+pub fn default_registry() -> ChannelWebhookRegistry {
+    ChannelWebhookRegistry::with_adapters(&[TELEGRAM_ADAPTER])
+}
 
 pub async fn channel_webhook_handler(
     Path(channel): Path<String>,
     State(state): State<SharedState>,
+    Extension(registry): Extension<ChannelWebhookRegistry>,
     headers: HeaderMap,
     Json(payload): Json<Value>,
 ) -> impl IntoResponse {
-    let Some(adapter) = adapter_for(&channel) else {
+    let Some(adapter) = registry.adapter_for(&channel) else {
         return (
             StatusCode::NOT_FOUND,
             Json(json!({
@@ -47,9 +76,42 @@ pub async fn channel_webhook_handler(
         );
     };
 
-    (adapter.dispatch)(&state, &headers, payload).await
+    adapter(&state, &headers, payload).await
 }
 
-fn adapter_for(channel: &str) -> Option<&'static ChannelWebhookAdapter> {
-    ADAPTERS.iter().find(|adapter| adapter.channel == channel)
+#[cfg(test)]
+mod tests {
+    use super::{ChannelWebhookAdapter, ChannelWebhookRegistry, TELEGRAM_ADAPTER, WebhookFuture};
+    use crate::application::state::SharedState;
+    use axum::{
+        Json,
+        http::{HeaderMap, StatusCode},
+    };
+    use serde_json::{Value, json};
+
+    fn fake_dispatch<'a>(
+        _state: &'a SharedState,
+        _headers: &'a HeaderMap,
+        _payload: Value,
+    ) -> WebhookFuture<'a> {
+        Box::pin(async { (StatusCode::OK, Json(json!({ "ok": true }))) })
+    }
+
+    #[test]
+    fn registry_resolves_registered_adapters() {
+        let mut registry = ChannelWebhookRegistry::default();
+        registry.register(ChannelWebhookAdapter {
+            channel: "fake",
+            dispatch: fake_dispatch,
+        });
+
+        assert!(registry.adapter_for("fake").is_some());
+        assert!(registry.adapter_for("missing").is_none());
+    }
+
+    #[test]
+    fn default_registry_includes_telegram() {
+        let registry = ChannelWebhookRegistry::with_adapters(&[TELEGRAM_ADAPTER]);
+        assert!(registry.adapter_for("telegram").is_some());
+    }
 }
