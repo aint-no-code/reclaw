@@ -76,6 +76,7 @@ cargo test --workspace --all-features
 - Channel ingress: `POST /channels/inbound`
 - Channel-specific ingress: `POST /channels/{channel}/inbound`
 - Telegram webhook: `POST /channels/telegram/webhook`
+- Channel webhook dispatch: `POST /channels/{channel}/webhook`
 - OpenAI chat completions: `POST /v1/chat/completions` (disabled by default)
 - OpenResponses: `POST /v1/responses` (disabled by default)
 
@@ -113,6 +114,7 @@ Set these config keys (or env vars):
 Send webhook updates to:
 
 - `POST /channels/telegram/webhook`
+- Or via adapter dispatch: `POST /channels/telegram/webhook` (same path shape for other channels)
 - Header: `x-telegram-bot-api-secret-token: <telegramWebhookSecret>`
 
 Text updates are ingested into session keys shaped like:

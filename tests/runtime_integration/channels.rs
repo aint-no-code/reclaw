@@ -337,3 +337,57 @@ async fn telegram_webhook_can_send_outbound_reply() {
     let _ = mock_join.await;
     server.stop().await;
 }
+
+#[tokio::test]
+async fn channel_webhook_dispatches_to_registered_adapter() {
+    let server = spawn_server_with(AuthMode::None, |config| {
+        config.telegram_webhook_secret = Some("secret-123".to_owned());
+    })
+    .await;
+
+    let client = reqwest::Client::new();
+    let response = client
+        .post(format!("http://{}/channels/telegram/webhook", server.addr))
+        .header("x-telegram-bot-api-secret-token", "secret-123")
+        .json(&json!({
+            "update_id": 303,
+            "message": {
+                "message_id": 3,
+                "chat": { "id": 909 },
+                "text": "via adapter registry"
+            }
+        }))
+        .send()
+        .await
+        .expect("channel webhook should return");
+
+    assert!(response.status().is_success());
+    let payload: Value = response.json().await.expect("response should be json");
+    assert_eq!(payload["ok"], true);
+    assert_eq!(payload["accepted"], true);
+    assert_eq!(payload["sessionKey"], "agent:main:telegram:chat:909");
+
+    server.stop().await;
+}
+
+#[tokio::test]
+async fn channel_webhook_rejects_unknown_adapter() {
+    let server = spawn_server_with(AuthMode::None, |_| {}).await;
+
+    let client = reqwest::Client::new();
+    let response = client
+        .post(format!("http://{}/channels/unknown/webhook", server.addr))
+        .json(&json!({
+            "foo": "bar"
+        }))
+        .send()
+        .await
+        .expect("channel webhook should return");
+
+    assert_eq!(response.status(), reqwest::StatusCode::NOT_FOUND);
+    let payload: Value = response.json().await.expect("response should be json");
+    assert_eq!(payload["ok"], false);
+    assert_eq!(payload["error"]["code"], "NOT_FOUND");
+
+    server.stop().await;
+}

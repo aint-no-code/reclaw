@@ -1,4 +1,4 @@
-use std::time::Duration;
+use std::{future::Future, pin::Pin, time::Duration};
 
 use axum::{
     Json,
@@ -63,6 +63,40 @@ pub async fn webhook_handler(
     headers: HeaderMap,
     Json(update): Json<TelegramWebhookUpdate>,
 ) -> impl IntoResponse {
+    handle_webhook_update(&state, &headers, update).await
+}
+
+pub(crate) fn dispatch_webhook<'a>(
+    state: &'a SharedState,
+    headers: &'a HeaderMap,
+    payload: Value,
+) -> Pin<Box<dyn Future<Output = (StatusCode, Json<Value>)> + Send + 'a>> {
+    Box::pin(async move {
+        let update = match serde_json::from_value::<TelegramWebhookUpdate>(payload) {
+            Ok(update) => update,
+            Err(error) => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(json!({
+                        "ok": false,
+                        "error": {
+                            "code": "INVALID_REQUEST",
+                            "message": format!("invalid telegram webhook payload: {error}"),
+                        }
+                    })),
+                );
+            }
+        };
+
+        handle_webhook_update(state, headers, update).await
+    })
+}
+
+async fn handle_webhook_update(
+    state: &SharedState,
+    headers: &HeaderMap,
+    update: TelegramWebhookUpdate,
+) -> (StatusCode, Json<Value>) {
     let Some(secret) = &state.config().telegram_webhook_secret else {
         return (
             StatusCode::SERVICE_UNAVAILABLE,
@@ -76,7 +110,7 @@ pub async fn webhook_handler(
         );
     };
 
-    if !valid_telegram_secret(&headers, secret) {
+    if !valid_telegram_secret(headers, secret) {
         return (
             StatusCode::UNAUTHORIZED,
             Json(json!({
@@ -147,7 +181,7 @@ pub async fn webhook_handler(
         })),
     };
 
-    let result = channels::ingest_inbound_message(&state, inbound).await;
+    let result = channels::ingest_inbound_message(state, inbound).await;
     let result = match result {
         Ok(value) => value,
         Err(error) => {
@@ -179,7 +213,7 @@ pub async fn webhook_handler(
 
     let mut outbound_sent = false;
     if let (Some(bot_token), Some(reply)) = (&state.config().telegram_bot_token, &result.reply) {
-        match send_telegram_message(&state, bot_token, message.chat.id, reply).await {
+        match send_telegram_message(state, bot_token, message.chat.id, reply).await {
             Ok(()) => outbound_sent = true,
             Err(error) => {
                 warn!("telegram outbound send failed: {error}");
