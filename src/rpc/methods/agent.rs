@@ -15,6 +15,11 @@ use crate::{
     storage::now_unix_ms,
 };
 
+const RUN_STATUS_QUEUED: &str = "queued";
+const RUN_STATUS_RUNNING: &str = "running";
+const RUN_STATUS_COMPLETED: &str = "completed";
+const RUN_STATUS_ERROR: &str = "error";
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct AgentRunParams {
@@ -32,6 +37,8 @@ struct AgentRunParams {
     message: Option<String>,
     #[serde(default)]
     text: Option<String>,
+    #[serde(default)]
+    deferred: Option<bool>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -85,6 +92,7 @@ pub async fn handle_agent(
         .agent_id
         .and_then(trim_non_empty)
         .unwrap_or_else(|| "main".to_owned());
+    let deferred = parsed.deferred.unwrap_or(false);
 
     if let Some(existing) = state
         .get_agent_run(&run_id)
@@ -95,63 +103,135 @@ pub async fn handle_agent(
     }
 
     let now = now_unix_ms();
-    let output = format!("Echo: {input}");
-
-    let run = AgentRunRecord {
+    let mut run = AgentRunRecord {
         id: run_id.clone(),
-        agent_id,
-        input: input.clone(),
-        output: output.clone(),
-        status: "completed".to_owned(),
+        agent_id: agent_id.clone(),
+        input,
+        output: String::new(),
+        status: if deferred {
+            RUN_STATUS_QUEUED.to_owned()
+        } else {
+            RUN_STATUS_RUNNING.to_owned()
+        },
         session_key: Some(session_key.clone()),
-        metadata: json!({
-            "runtime": "reclaw-core",
-            "source": "agent",
-            "lineage": "openclaw",
-        }),
+        metadata: agent_run_metadata(deferred),
         created_at_ms: now,
         updated_at_ms: now,
-        completed_at_ms: Some(now),
+        completed_at_ms: None,
     };
 
+    if deferred {
+        state
+            .upsert_agent_run(&run)
+            .await
+            .map_err(map_domain_error)?;
+        return Ok(agent_method_response(
+            &run_id,
+            &session_key,
+            None,
+            RUN_STATUS_QUEUED,
+        ));
+    }
+
+    run = execute_agent_run(state, run).await?;
+    Ok(agent_method_response(
+        &run_id,
+        &session_key,
+        Some(run.output.as_str()),
+        RUN_STATUS_COMPLETED,
+    ))
+}
+
+fn agent_run_metadata(deferred: bool) -> Value {
+    json!({
+        "runtime": "reclaw-core",
+        "source": "agent",
+        "lineage": "openclaw",
+        "deferred": deferred,
+    })
+}
+
+fn agent_method_response(
+    run_id: &str,
+    session_key: &str,
+    output: Option<&str>,
+    summary: &str,
+) -> Value {
+    json!({
+        "runId": run_id,
+        "status": "ok",
+        "summary": summary,
+        "result": {
+            "output": output.map(Value::from).unwrap_or(Value::Null),
+            "sessionKey": session_key,
+        },
+    })
+}
+
+async fn execute_agent_run(
+    state: &SharedState,
+    mut run: AgentRunRecord,
+) -> Result<AgentRunRecord, crate::protocol::ErrorShape> {
+    let Some(session_key) = run.session_key.clone() else {
+        return Err(crate::protocol::ErrorShape::new(
+            crate::protocol::ERROR_INVALID_REQUEST,
+            "invalid stored agent run: sessionKey is required",
+        ));
+    };
+
+    if run.status != RUN_STATUS_RUNNING {
+        run.status = RUN_STATUS_RUNNING.to_owned();
+        run.updated_at_ms = now_unix_ms();
+    }
     state
         .upsert_agent_run(&run)
         .await
         .map_err(map_domain_error)?;
 
+    let output = format!("Echo: {}", run.input);
     let messages = vec![
         ChatMessage {
             id: format!("msg-{}", uuid::Uuid::new_v4()),
             role: "user".to_owned(),
-            text: input,
+            text: run.input.clone(),
             status: "final".to_owned(),
-            ts: now,
-            metadata: json!({ "runId": run_id }),
+            ts: run.updated_at_ms,
+            metadata: json!({ "runId": run.id }),
         },
         ChatMessage {
             id: format!("msg-{}", uuid::Uuid::new_v4()),
             role: "assistant".to_owned(),
             text: output.clone(),
             status: "final".to_owned(),
-            ts: now.saturating_add(1),
-            metadata: json!({ "runId": run_id }),
+            ts: run.updated_at_ms.saturating_add(1),
+            metadata: json!({ "runId": run.id }),
         },
     ];
 
+    if let Err(error) = state.append_chat_messages(&session_key, &messages).await {
+        let failed_at = now_unix_ms();
+        run.status = RUN_STATUS_ERROR.to_owned();
+        run.output = format!("agent execution failed while appending chat messages: {error}");
+        run.updated_at_ms = failed_at;
+        run.completed_at_ms = Some(failed_at);
+        state
+            .upsert_agent_run(&run)
+            .await
+            .map_err(map_domain_error)?;
+        return Err(map_domain_error(error));
+    }
+
+    let completed_at = now_unix_ms();
+    run.status = RUN_STATUS_COMPLETED.to_owned();
+    run.output = output;
+    run.updated_at_ms = completed_at;
+    run.completed_at_ms = Some(completed_at);
     state
-        .append_chat_messages(&session_key, &messages)
+        .upsert_agent_run(&run)
         .await
         .map_err(map_domain_error)?;
 
-    Ok(json!({
-        "runId": run_id,
-        "status": "ok",
-        "summary": "completed",
-        "result": {
-            "output": output,
-            "sessionKey": session_key,
-        },
-    }))
+    Ok(run)
 }
 
 fn resolve_existing_agent_run(
@@ -187,12 +267,18 @@ fn resolve_existing_agent_run(
         ));
     }
 
+    let output = if existing.status == RUN_STATUS_COMPLETED || existing.status == RUN_STATUS_ERROR {
+        Value::from(existing.output.clone())
+    } else {
+        Value::Null
+    };
+
     Ok(json!({
         "runId": existing.id,
         "status": "ok",
         "summary": existing.status,
         "result": {
-            "output": existing.output,
+            "output": output,
             "sessionKey": existing
                 .session_key
                 .unwrap_or_else(|| requested_session_key.to_owned()),
@@ -221,13 +307,22 @@ pub async fn handle_agent_wait(
             .await
             .map_err(map_domain_error)?
         {
-            return Ok(json!({
-                "runId": run_id,
-                "status": run.status,
-                "startedAt": run.created_at_ms,
-                "endedAt": run.completed_at_ms,
-                "error": if run.status == "error" { Some(run.output) } else { None::<String> },
-            }));
+            if run.status == RUN_STATUS_QUEUED {
+                let run = execute_agent_run(state, run).await?;
+                return Ok(agent_wait_payload(&run_id, &run));
+            }
+            if run.status == RUN_STATUS_RUNNING {
+                if Instant::now() >= deadline {
+                    return Ok(json!({
+                        "runId": run_id,
+                        "status": "timeout",
+                    }));
+                }
+                sleep(Duration::from_millis(50)).await;
+                continue;
+            }
+
+            return Ok(agent_wait_payload(&run_id, &run));
         }
 
         if Instant::now() >= deadline {
@@ -239,6 +334,20 @@ pub async fn handle_agent_wait(
 
         sleep(Duration::from_millis(50)).await;
     }
+}
+
+fn agent_wait_payload(run_id: &str, run: &AgentRunRecord) -> Value {
+    json!({
+        "runId": run_id,
+        "status": run.status,
+        "startedAt": run.created_at_ms,
+        "endedAt": run.completed_at_ms,
+        "error": if run.status == RUN_STATUS_ERROR {
+            Some(run.output.clone())
+        } else {
+            None::<String>
+        },
+    })
 }
 
 pub async fn handle_agent_identity(

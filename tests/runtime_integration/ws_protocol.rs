@@ -452,6 +452,103 @@ async fn operator_cannot_call_node_role_methods() {
 }
 
 #[tokio::test]
+async fn deferred_agent_run_executes_via_wait() {
+    let server = spawn_server(AuthMode::None).await;
+    let mut ws = connect_gateway(server.addr).await;
+
+    ws.send(Message::Text(
+        connect_frame(
+            None,
+            1,
+            PROTOCOL_VERSION,
+            "operator",
+            "reclaw-deferred",
+            &[],
+        )
+        .to_string()
+        .into(),
+    ))
+    .await
+    .expect("connect frame should send");
+    let _ = recv_json(&mut ws).await;
+
+    let queued = rpc_req(
+        &mut ws,
+        "defer-1",
+        "agent",
+        Some(json!({
+            "runId": "run-deferred-1",
+            "sessionKey": "agent:main:deferred",
+            "agentId": "main",
+            "input": "deferred hello",
+            "deferred": true
+        })),
+    )
+    .await;
+    assert_eq!(queued["ok"], true);
+    assert_eq!(queued["payload"]["summary"], "queued");
+    assert!(queued["payload"]["result"]["output"].is_null());
+
+    let wait = rpc_req(
+        &mut ws,
+        "defer-2",
+        "agent.wait",
+        Some(json!({
+            "runId": "run-deferred-1",
+            "timeoutMs": 2_000
+        })),
+    )
+    .await;
+    assert_eq!(wait["ok"], true);
+    assert_eq!(wait["payload"]["status"], "completed");
+    assert!(wait["payload"]["endedAt"].is_number());
+
+    let history = rpc_req(
+        &mut ws,
+        "defer-3",
+        "chat.history",
+        Some(json!({
+            "sessionKey": "agent:main:deferred",
+            "limit": 10
+        })),
+    )
+    .await;
+    assert_eq!(history["ok"], true);
+    assert!(
+        history["payload"]["messages"]
+            .as_array()
+            .is_some_and(|messages| {
+                messages.len() == 2
+                    && messages[1]["text"]
+                        .as_str()
+                        .is_some_and(|text| text == "Echo: deferred hello")
+            })
+    );
+
+    let replay = rpc_req(
+        &mut ws,
+        "defer-4",
+        "agent",
+        Some(json!({
+            "runId": "run-deferred-1",
+            "sessionKey": "agent:main:deferred",
+            "agentId": "main",
+            "input": "should be ignored",
+            "deferred": true
+        })),
+    )
+    .await;
+    assert_eq!(replay["ok"], true);
+    assert_eq!(replay["payload"]["summary"], "completed");
+    assert_eq!(
+        replay["payload"]["result"]["output"],
+        "Echo: deferred hello"
+    );
+
+    server.stop().await;
+}
+
+#[tokio::test]
 async fn extended_method_groups_round_trip() {
     let server = spawn_server_with(AuthMode::None, |config| {
         config.channel_webhook_plugins.insert(

@@ -34,6 +34,7 @@ Scope compared: `openclaw/src/gateway/**` and `openclaw/src/channels/plugins/**`
 - Current Rust status:
   - `chat.send` uses deterministic echo response and does not run full agent/tool execution pipeline.
   - run/idempotency reuse is now guarded for `chat.send` and `agent` to avoid duplicate side effects.
+  - `agent` supports queued deferred runs executed through `agent.wait` (lifecycle scaffolding).
 
 2. Plugin/channel runtime parity (dynamic channel plugin system).
 - OpenClaw references:

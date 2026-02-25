@@ -11,6 +11,10 @@
 - `node.pair.request`, `node.pair.list`, `node.pair.approve`, `node.pair.reject`, `node.pair.verify`
 - `node.rename`, `node.list`, `node.describe`, `node.invoke`, `node.invoke.result`, `node.event`
 
+## Runtime Notes
+
+- `agent` accepts optional `deferred=true` to create a queued run that executes when `agent.wait` is called.
+
 ## Error Rules
 
 - Invalid request shape or invalid parameter: `INVALID_REQUEST`.
