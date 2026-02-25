@@ -1,8 +1,13 @@
+pub(crate) mod channel_adapter_common;
 pub mod channels;
 pub(crate) mod compat;
+pub mod discord;
 pub mod http;
 pub mod openai;
 pub mod openresponses;
+pub mod signal;
+pub mod slack;
 pub mod telegram;
 pub mod webhooks;
+pub mod whatsapp;
 pub(crate) mod ws;

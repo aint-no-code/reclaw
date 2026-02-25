@@ -58,6 +58,18 @@ pub struct Args {
     #[arg(long, env = "RECLAW_TELEGRAM_API_BASE_URL")]
     pub telegram_api_base_url: Option<String>,
 
+    #[arg(long, env = "RECLAW_DISCORD_WEBHOOK_TOKEN")]
+    pub discord_webhook_token: Option<String>,
+
+    #[arg(long, env = "RECLAW_SLACK_WEBHOOK_TOKEN")]
+    pub slack_webhook_token: Option<String>,
+
+    #[arg(long, env = "RECLAW_SIGNAL_WEBHOOK_TOKEN")]
+    pub signal_webhook_token: Option<String>,
+
+    #[arg(long, env = "RECLAW_WHATSAPP_WEBHOOK_TOKEN")]
+    pub whatsapp_webhook_token: Option<String>,
+
     #[arg(long, env = "RECLAW_OPENAI_CHAT_COMPLETIONS_ENABLED")]
     pub openai_chat_completions_enabled: Option<bool>,
 
@@ -159,6 +171,10 @@ pub struct RuntimeConfig {
     pub telegram_webhook_secret: Option<String>,
     pub telegram_bot_token: Option<String>,
     pub telegram_api_base_url: String,
+    pub discord_webhook_token: Option<String>,
+    pub slack_webhook_token: Option<String>,
+    pub signal_webhook_token: Option<String>,
+    pub whatsapp_webhook_token: Option<String>,
     pub openai_chat_completions_enabled: bool,
     pub openresponses_enabled: bool,
     pub max_payload_bytes: usize,
@@ -264,6 +280,22 @@ impl RuntimeConfig {
                 .or(static_config.telegram_api_base_url),
         )
         .unwrap_or_else(|| "https://api.telegram.org".to_owned());
+        let discord_webhook_token = normalize_non_empty(
+            args.discord_webhook_token
+                .or(static_config.discord_webhook_token),
+        );
+        let slack_webhook_token = normalize_non_empty(
+            args.slack_webhook_token
+                .or(static_config.slack_webhook_token),
+        );
+        let signal_webhook_token = normalize_non_empty(
+            args.signal_webhook_token
+                .or(static_config.signal_webhook_token),
+        );
+        let whatsapp_webhook_token = normalize_non_empty(
+            args.whatsapp_webhook_token
+                .or(static_config.whatsapp_webhook_token),
+        );
         let openai_chat_completions_enabled = args
             .openai_chat_completions_enabled
             .or(static_config.openai_chat_completions_enabled)
@@ -310,6 +342,10 @@ impl RuntimeConfig {
             telegram_webhook_secret,
             telegram_bot_token,
             telegram_api_base_url,
+            discord_webhook_token,
+            slack_webhook_token,
+            signal_webhook_token,
+            whatsapp_webhook_token,
             openai_chat_completions_enabled,
             openresponses_enabled,
             max_payload_bytes,
@@ -343,6 +379,10 @@ impl RuntimeConfig {
             telegram_webhook_secret: None,
             telegram_bot_token: None,
             telegram_api_base_url: "https://api.telegram.org".to_owned(),
+            discord_webhook_token: None,
+            slack_webhook_token: None,
+            signal_webhook_token: None,
+            whatsapp_webhook_token: None,
             openai_chat_completions_enabled: false,
             openresponses_enabled: false,
             max_payload_bytes: 512 * 1024,
@@ -373,6 +413,10 @@ struct StaticConfigValues {
     telegram_webhook_secret: Option<String>,
     telegram_bot_token: Option<String>,
     telegram_api_base_url: Option<String>,
+    discord_webhook_token: Option<String>,
+    slack_webhook_token: Option<String>,
+    signal_webhook_token: Option<String>,
+    whatsapp_webhook_token: Option<String>,
     openai_chat_completions_enabled: Option<bool>,
     openresponses_enabled: Option<bool>,
     max_payload_bytes: Option<usize>,
@@ -406,6 +450,13 @@ impl StaticConfigValues {
         );
         override_option(&mut self.telegram_bot_token, other.telegram_bot_token);
         override_option(&mut self.telegram_api_base_url, other.telegram_api_base_url);
+        override_option(&mut self.discord_webhook_token, other.discord_webhook_token);
+        override_option(&mut self.slack_webhook_token, other.slack_webhook_token);
+        override_option(&mut self.signal_webhook_token, other.signal_webhook_token);
+        override_option(
+            &mut self.whatsapp_webhook_token,
+            other.whatsapp_webhook_token,
+        );
         override_option(
             &mut self.openai_chat_completions_enabled,
             other.openai_chat_completions_enabled,
@@ -560,6 +611,10 @@ mod tests {
             telegram_webhook_secret: None,
             telegram_bot_token: None,
             telegram_api_base_url: None,
+            discord_webhook_token: None,
+            slack_webhook_token: None,
+            signal_webhook_token: None,
+            whatsapp_webhook_token: None,
             openai_chat_completions_enabled: None,
             openresponses_enabled: None,
             max_payload_bytes: None,
@@ -680,6 +735,27 @@ mod tests {
         let runtime = RuntimeConfig::from_args(args).expect("runtime config should build");
         assert!(runtime.openai_chat_completions_enabled);
         assert!(!runtime.openresponses_enabled);
+    }
+
+    #[test]
+    fn runtime_config_supports_channel_webhook_tokens() {
+        let temp_dir = tempfile::tempdir().expect("temp dir should be created");
+        let config_path = temp_dir.path().join("config.toml");
+        fs::write(
+            &config_path,
+            "discordWebhookToken = \"discord-a\"\nslackWebhookToken = \"slack-a\"\nsignalWebhookToken = \"signal-a\"\nwhatsappWebhookToken = \"wa-a\"\n",
+        )
+        .expect("config should write");
+
+        let mut args = empty_args();
+        args.config = Some(config_path);
+        args.slack_webhook_token = Some("slack-cli".to_owned());
+
+        let runtime = RuntimeConfig::from_args(args).expect("runtime config should build");
+        assert_eq!(runtime.discord_webhook_token.as_deref(), Some("discord-a"));
+        assert_eq!(runtime.slack_webhook_token.as_deref(), Some("slack-cli"));
+        assert_eq!(runtime.signal_webhook_token.as_deref(), Some("signal-a"));
+        assert_eq!(runtime.whatsapp_webhook_token.as_deref(), Some("wa-a"));
     }
 
     #[test]

@@ -115,12 +115,28 @@ Set these config keys (or env vars):
 Send webhook updates to:
 
 - `POST /channels/telegram/webhook`
-- Or via adapter dispatch: `POST /channels/telegram/webhook` (same path shape for other channels)
+- Or generic adapter route: `POST /channels/telegram/webhook`
 - Header: `x-telegram-bot-api-secret-token: <telegramWebhookSecret>`
 
 Text updates are ingested into session keys shaped like:
 
 - `agent:main:telegram:chat:<chat_id>`
+
+### Additional Channel Webhook Adapters
+
+Built-in webhook adapters are now available for:
+
+- `discord` at `POST /channels/discord/webhook`
+- `slack` at `POST /channels/slack/webhook`
+- `signal` at `POST /channels/signal/webhook`
+- `whatsapp` at `POST /channels/whatsapp/webhook`
+
+Each of these adapters requires a bearer token in `Authorization`:
+
+- `discordWebhookToken` / `RECLAW_DISCORD_WEBHOOK_TOKEN`
+- `slackWebhookToken` / `RECLAW_SLACK_WEBHOOK_TOKEN`
+- `signalWebhookToken` / `RECLAW_SIGNAL_WEBHOOK_TOKEN`
+- `whatsappWebhookToken` / `RECLAW_WHATSAPP_WEBHOOK_TOKEN`
 
 ## LLM Compatibility Endpoints
 

@@ -19,6 +19,10 @@ This document defines how channel-specific webhook integrations plug into `recla
 Current default registry includes:
 
 - `telegram` adapter
+- `discord` adapter
+- `slack` adapter
+- `signal` adapter
+- `whatsapp` adapter
 
 ## HTTP Surfaces
 

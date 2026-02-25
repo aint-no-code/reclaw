@@ -10,7 +10,7 @@ use serde_json::{Value, json};
 
 use crate::application::state::SharedState;
 
-use super::telegram;
+use super::{discord, signal, slack, telegram, whatsapp};
 
 pub type WebhookFuture<'a> = Pin<Box<dyn Future<Output = (StatusCode, Json<Value>)> + Send + 'a>>;
 pub type WebhookDispatchFn = for<'a> fn(&'a SharedState, &'a HeaderMap, Value) -> WebhookFuture<'a>;
@@ -24,6 +24,22 @@ pub struct ChannelWebhookAdapter {
 pub const TELEGRAM_ADAPTER: ChannelWebhookAdapter = ChannelWebhookAdapter {
     channel: "telegram",
     dispatch: telegram::dispatch_webhook,
+};
+pub const DISCORD_ADAPTER: ChannelWebhookAdapter = ChannelWebhookAdapter {
+    channel: "discord",
+    dispatch: discord::dispatch_webhook,
+};
+pub const SLACK_ADAPTER: ChannelWebhookAdapter = ChannelWebhookAdapter {
+    channel: "slack",
+    dispatch: slack::dispatch_webhook,
+};
+pub const SIGNAL_ADAPTER: ChannelWebhookAdapter = ChannelWebhookAdapter {
+    channel: "signal",
+    dispatch: signal::dispatch_webhook,
+};
+pub const WHATSAPP_ADAPTER: ChannelWebhookAdapter = ChannelWebhookAdapter {
+    channel: "whatsapp",
+    dispatch: whatsapp::dispatch_webhook,
 };
 
 #[derive(Clone, Default)]
@@ -53,7 +69,13 @@ impl ChannelWebhookRegistry {
 
 #[must_use]
 pub fn default_registry() -> ChannelWebhookRegistry {
-    ChannelWebhookRegistry::with_adapters(&[TELEGRAM_ADAPTER])
+    ChannelWebhookRegistry::with_adapters(&[
+        TELEGRAM_ADAPTER,
+        DISCORD_ADAPTER,
+        SLACK_ADAPTER,
+        SIGNAL_ADAPTER,
+        WHATSAPP_ADAPTER,
+    ])
 }
 
 pub async fn channel_webhook_handler(
@@ -81,7 +103,10 @@ pub async fn channel_webhook_handler(
 
 #[cfg(test)]
 mod tests {
-    use super::{ChannelWebhookAdapter, ChannelWebhookRegistry, TELEGRAM_ADAPTER, WebhookFuture};
+    use super::{
+        ChannelWebhookAdapter, ChannelWebhookRegistry, DISCORD_ADAPTER, SIGNAL_ADAPTER,
+        SLACK_ADAPTER, TELEGRAM_ADAPTER, WHATSAPP_ADAPTER, WebhookFuture,
+    };
     use crate::application::state::SharedState;
     use axum::{
         Json,
@@ -111,7 +136,17 @@ mod tests {
 
     #[test]
     fn default_registry_includes_telegram() {
-        let registry = ChannelWebhookRegistry::with_adapters(&[TELEGRAM_ADAPTER]);
+        let registry = ChannelWebhookRegistry::with_adapters(&[
+            TELEGRAM_ADAPTER,
+            DISCORD_ADAPTER,
+            SLACK_ADAPTER,
+            SIGNAL_ADAPTER,
+            WHATSAPP_ADAPTER,
+        ]);
         assert!(registry.adapter_for("telegram").is_some());
+        assert!(registry.adapter_for("discord").is_some());
+        assert!(registry.adapter_for("slack").is_some());
+        assert!(registry.adapter_for("signal").is_some());
+        assert!(registry.adapter_for("whatsapp").is_some());
     }
 }

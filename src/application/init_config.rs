@@ -194,6 +194,12 @@ dbPath = \"{}\"\n\
 # telegramBotToken = \"replace-me\"\n\
 # telegramApiBaseUrl = \"https://api.telegram.org\"\n\
 \n\
+# Additional channel webhook tokens (Authorization: Bearer <token>).\n\
+# discordWebhookToken = \"replace-me\"\n\
+# slackWebhookToken = \"replace-me\"\n\
+# signalWebhookToken = \"replace-me\"\n\
+# whatsappWebhookToken = \"replace-me\"\n\
+\n\
 # HTTP compatibility endpoints (disabled by default).\n\
 # openaiChatCompletionsEnabled = true\n\
 # openresponsesEnabled = true\n",

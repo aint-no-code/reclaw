@@ -16,7 +16,39 @@ use tokio::{
 };
 use tokio_tungstenite::tungstenite::Message;
 
-use super::support::{connect_frame, connect_gateway, recv_json, rpc_req, spawn_server_with};
+use super::support::{
+    connect_frame, connect_gateway, recv_json, rpc_req, spawn_server_with,
+    spawn_server_with_webhooks,
+};
+
+async fn assert_session_has_history(server_addr: std::net::SocketAddr, session_key: &str) {
+    let mut ws = connect_gateway(server_addr).await;
+    ws.send(Message::Text(
+        connect_frame(None, 1, PROTOCOL_VERSION, "operator", "reclaw-test", &[])
+            .to_string()
+            .into(),
+    ))
+    .await
+    .expect("connect frame should send");
+    let _ = recv_json(&mut ws).await;
+
+    let history = rpc_req(
+        &mut ws,
+        "history-1",
+        "chat.history",
+        Some(json!({
+            "sessionKey": session_key,
+            "limit": 20
+        })),
+    )
+    .await;
+    assert_eq!(history["ok"], true);
+    assert!(
+        history["payload"]["messages"]
+            .as_array()
+            .is_some_and(|messages| messages.len() >= 2)
+    );
+}
 
 #[tokio::test]
 async fn channels_inbound_requires_bearer_token_when_configured() {
@@ -396,6 +428,34 @@ async fn channel_webhook_rejects_unknown_adapter() {
     server.stop().await;
 }
 
+#[tokio::test]
+async fn slack_webhook_requires_configured_token() {
+    let server = spawn_server_with(AuthMode::None, |_| {}).await;
+
+    let client = reqwest::Client::new();
+    let response = client
+        .post(format!("http://{}/channels/slack/webhook", server.addr))
+        .json(&json!({
+            "type": "event_callback",
+            "event_id": "Ev-unauth",
+            "event": {
+                "type": "message",
+                "channel": "C-1",
+                "text": "hello"
+            }
+        }))
+        .send()
+        .await
+        .expect("slack webhook should return");
+
+    assert_eq!(response.status(), reqwest::StatusCode::SERVICE_UNAVAILABLE);
+    let payload: Value = response.json().await.expect("response should be json");
+    assert_eq!(payload["ok"], false);
+    assert_eq!(payload["error"]["code"], "UNAVAILABLE");
+
+    server.stop().await;
+}
+
 fn fake_webhook_dispatch<'a>(
     _state: &'a SharedState,
     _headers: &'a axum::http::HeaderMap,
@@ -421,7 +481,7 @@ async fn channel_webhook_supports_runtime_injected_registry_adapters() {
         dispatch: fake_webhook_dispatch,
     });
 
-    let server = super::support::spawn_server_with_webhooks(AuthMode::None, |_| {}, registry).await;
+    let server = spawn_server_with_webhooks(AuthMode::None, |_| {}, registry).await;
 
     let client = reqwest::Client::new();
     let response = client
@@ -438,6 +498,161 @@ async fn channel_webhook_supports_runtime_injected_registry_adapters() {
     assert_eq!(payload["ok"], true);
     assert_eq!(payload["channel"], "fakechat");
     assert_eq!(payload["payload"]["hello"], "world");
+
+    server.stop().await;
+}
+
+#[tokio::test]
+async fn slack_webhook_ingests_event_message() {
+    let server = spawn_server_with(AuthMode::None, |config| {
+        config.slack_webhook_token = Some("slack-token".to_owned());
+    })
+    .await;
+
+    let client = reqwest::Client::new();
+    let response = client
+        .post(format!("http://{}/channels/slack/webhook", server.addr))
+        .bearer_auth("slack-token")
+        .json(&json!({
+            "type": "event_callback",
+            "event_id": "Ev-1",
+            "event": {
+                "type": "message",
+                "channel": "C123",
+                "user": "U123",
+                "text": "hello from slack",
+                "ts": "111.222"
+            }
+        }))
+        .send()
+        .await
+        .expect("slack webhook should return");
+
+    assert!(response.status().is_success());
+    let payload: Value = response.json().await.expect("response should be json");
+    assert_eq!(payload["ok"], true);
+    assert_eq!(payload["accepted"], true);
+
+    let session_key = payload["sessionKey"]
+        .as_str()
+        .expect("session key should exist")
+        .to_owned();
+    assert_session_has_history(server.addr, &session_key).await;
+
+    server.stop().await;
+}
+
+#[tokio::test]
+async fn discord_webhook_ingests_message_payload() {
+    let server = spawn_server_with(AuthMode::None, |config| {
+        config.discord_webhook_token = Some("discord-token".to_owned());
+    })
+    .await;
+
+    let client = reqwest::Client::new();
+    let response = client
+        .post(format!("http://{}/channels/discord/webhook", server.addr))
+        .bearer_auth("discord-token")
+        .json(&json!({
+            "id": "msg-1",
+            "channel_id": "chan-1",
+            "content": "hello from discord",
+            "author": { "id": "user-1" }
+        }))
+        .send()
+        .await
+        .expect("discord webhook should return");
+
+    assert!(response.status().is_success());
+    let payload: Value = response.json().await.expect("response should be json");
+    assert_eq!(payload["ok"], true);
+    assert_eq!(payload["accepted"], true);
+
+    let session_key = payload["sessionKey"]
+        .as_str()
+        .expect("session key should exist")
+        .to_owned();
+    assert_session_has_history(server.addr, &session_key).await;
+
+    server.stop().await;
+}
+
+#[tokio::test]
+async fn signal_webhook_ingests_envelope_payload() {
+    let server = spawn_server_with(AuthMode::None, |config| {
+        config.signal_webhook_token = Some("signal-token".to_owned());
+    })
+    .await;
+
+    let client = reqwest::Client::new();
+    let response = client
+        .post(format!("http://{}/channels/signal/webhook", server.addr))
+        .bearer_auth("signal-token")
+        .json(&json!({
+            "envelope": {
+                "sourceNumber": "+123456789",
+                "timestamp": 1700000000,
+                "dataMessage": {
+                    "message": "hello from signal"
+                }
+            }
+        }))
+        .send()
+        .await
+        .expect("signal webhook should return");
+
+    assert!(response.status().is_success());
+    let payload: Value = response.json().await.expect("response should be json");
+    assert_eq!(payload["ok"], true);
+    assert_eq!(payload["accepted"], true);
+
+    let session_key = payload["sessionKey"]
+        .as_str()
+        .expect("session key should exist")
+        .to_owned();
+    assert_session_has_history(server.addr, &session_key).await;
+
+    server.stop().await;
+}
+
+#[tokio::test]
+async fn whatsapp_webhook_ingests_cloud_payload() {
+    let server = spawn_server_with(AuthMode::None, |config| {
+        config.whatsapp_webhook_token = Some("whatsapp-token".to_owned());
+    })
+    .await;
+
+    let client = reqwest::Client::new();
+    let response = client
+        .post(format!("http://{}/channels/whatsapp/webhook", server.addr))
+        .bearer_auth("whatsapp-token")
+        .json(&json!({
+            "entry": [{
+                "changes": [{
+                    "value": {
+                        "messages": [{
+                            "id": "wamid.1",
+                            "from": "15551234567",
+                            "text": { "body": "hello from whatsapp" }
+                        }]
+                    }
+                }]
+            }]
+        }))
+        .send()
+        .await
+        .expect("whatsapp webhook should return");
+
+    assert!(response.status().is_success());
+    let payload: Value = response.json().await.expect("response should be json");
+    assert_eq!(payload["ok"], true);
+    assert_eq!(payload["accepted"], true);
+
+    let session_key = payload["sessionKey"]
+        .as_str()
+        .expect("session key should exist")
+        .to_owned();
+    assert_session_has_history(server.addr, &session_key).await;
 
     server.stop().await;
 }
