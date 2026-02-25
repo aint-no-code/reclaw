@@ -1,5 +1,7 @@
 # Architecture Specification
 
+Reclaw Core is a Rust runtime fork in the OpenClaw lineage and keeps RPC/protocol compatibility where explicitly documented.
+
 ## Boundaries
 
 - `domain`: pure domain types, invariants, and domain errors.

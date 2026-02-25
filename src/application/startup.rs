@@ -33,7 +33,7 @@ pub async fn run_with_listener(
     shutdown: impl Future<Output = ()> + Send + 'static,
 ) -> Result<(), DomainError> {
     info!(
-        "starting reclaw-server host={} port={} auth_mode={}",
+        "starting reclaw-core host={} port={} auth_mode={}",
         config.host,
         config.port,
         config.auth_mode.label()

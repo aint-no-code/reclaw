@@ -1,5 +1,5 @@
 use clap::Parser;
-use reclaw_server::application::{config::Args, startup};
+use reclaw_core::application::{config::Args, startup};
 use tracing::error;
 
 #[tokio::main]

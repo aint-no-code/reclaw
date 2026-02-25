@@ -8,9 +8,9 @@ use clap::Parser;
 
 #[derive(Debug, Clone, Parser)]
 #[command(
-    name = "reclaw-server",
+    name = "reclaw-core",
     version,
-    about = "Reclaw server runtime (Rust gateway transport + RPC core)"
+    about = "Reclaw Core (Rust gateway transport + RPC core), forked from OpenClaw"
 )]
 pub struct Args {
     #[arg(long, env = "RECLAW_HOST", default_value = "127.0.0.1")]
@@ -49,7 +49,7 @@ pub struct Args {
     #[arg(
         long,
         env = "RECLAW_DB_PATH",
-        default_value = "./.reclaw-server/reclaw.db"
+        default_value = "./.reclaw-core/reclaw.db"
     )]
     pub db_path: PathBuf,
 

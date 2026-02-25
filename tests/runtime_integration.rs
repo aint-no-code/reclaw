@@ -1,11 +1,11 @@
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
 use futures_util::{SinkExt, StreamExt};
-use reclaw_server::application::{
+use reclaw_core::application::{
     config::{AuthMode, RuntimeConfig},
     startup,
 };
-use reclaw_server::protocol::PROTOCOL_VERSION;
+use reclaw_core::protocol::PROTOCOL_VERSION;
 use serde_json::{Value, json};
 use tempfile::TempDir;
 use tokio::{net::TcpListener, sync::oneshot, task::JoinHandle};

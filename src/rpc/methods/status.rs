@@ -23,9 +23,13 @@ pub async fn handle(state: &SharedState, session: &SessionContext) -> Value {
 #[must_use]
 pub fn info_payload(state: &SharedState) -> Value {
     json!({
-        "name": "reclaw-server",
+        "name": "reclaw-core",
         "runtime": "rust",
         "version": state.config().runtime_version,
+        "lineage": {
+            "forkedFrom": "openclaw",
+            "upstream": "https://github.com/openclaw/openclaw"
+        },
         "protocolVersion": crate::protocol::PROTOCOL_VERSION,
         "authMode": state.auth_mode_label(),
         "methods": state.methods(),

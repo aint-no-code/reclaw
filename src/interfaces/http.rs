@@ -31,7 +31,7 @@ pub async fn serve(
     })?;
 
     info!(
-        "reclaw-server listening on ws://{}:{}, auth_mode={}, protocol={}",
+        "reclaw-core listening on ws://{}:{}, auth_mode={}, protocol={}",
         local_addr.ip(),
         local_addr.port(),
         state.auth_mode_label(),

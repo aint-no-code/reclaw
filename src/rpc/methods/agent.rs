@@ -97,8 +97,9 @@ pub async fn handle_agent(
         status: "completed".to_owned(),
         session_key: Some(session_key.clone()),
         metadata: json!({
-            "runtime": "reclaw-server",
+            "runtime": "reclaw-core",
             "source": "agent",
+            "lineage": "openclaw",
         }),
         created_at_ms: now,
         updated_at_ms: now,

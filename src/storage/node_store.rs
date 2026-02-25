@@ -254,7 +254,7 @@ impl SqliteStore {
             status: "completed".to_owned(),
             result: Some(serde_json::json!({
                 "ok": true,
-                "message": "invoke simulated by reclaw-server runtime"
+                "message": "invoke simulated by reclaw-core runtime (OpenClaw lineage)"
             })),
             error: None,
             requested_at_ms: now,

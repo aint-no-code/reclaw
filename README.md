@@ -1,6 +1,6 @@
-# reclaw-server
+# Reclaw Core
 
-`reclaw-server` is the Rust gateway runtime for Reclaw.
+`Reclaw Core` is the Rust gateway runtime for Reclaw, forked from and protocol-compatible with [OpenClaw](https://github.com/openclaw/openclaw).
 
 ## Specs
 
@@ -11,7 +11,7 @@
 ## Run
 
 ```bash
-cargo run -p reclaw-server -- --host 127.0.0.1 --port 18789
+cargo run -p reclaw-core -- --host 127.0.0.1 --port 18789
 ```
 
 ## Quality Gates

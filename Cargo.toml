@@ -1,9 +1,9 @@
 [package]
-name = "reclaw-server"
+name = "reclaw-core"
 version = "0.1.0"
 edition = "2024"
 license = "MIT"
-description = "Reclaw gateway server runtime in Rust"
+description = "Reclaw Core: Rust gateway runtime forked from OpenClaw"
 repository = "https://github.com/themondays/reclaw"
 
 [lints.clippy]
