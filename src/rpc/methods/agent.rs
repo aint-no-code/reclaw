@@ -337,6 +337,12 @@ pub async fn handle_agent_wait(
 }
 
 fn agent_wait_payload(run_id: &str, run: &AgentRunRecord) -> Value {
+    let output = if run.status == RUN_STATUS_COMPLETED {
+        Value::from(run.output.clone())
+    } else {
+        Value::Null
+    };
+
     json!({
         "runId": run_id,
         "status": run.status,
@@ -346,6 +352,10 @@ fn agent_wait_payload(run_id: &str, run: &AgentRunRecord) -> Value {
             Some(run.output.clone())
         } else {
             None::<String>
+        },
+        "result": {
+            "output": output,
+            "sessionKey": run.session_key,
         },
     })
 }

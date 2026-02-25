@@ -222,6 +222,8 @@ async fn method_groups_round_trip() {
     .await;
     assert_eq!(wait["ok"], true);
     assert_eq!(wait["payload"]["status"], "completed");
+    assert_eq!(wait["payload"]["result"]["output"], "Echo: hello");
+    assert_eq!(wait["payload"]["result"]["sessionKey"], "agent:main:main");
 
     let agent_run = rpc_req(
         &mut ws,
@@ -266,6 +268,14 @@ async fn method_groups_round_trip() {
     .await;
     assert_eq!(agent_wait["ok"], true);
     assert_eq!(agent_wait["payload"]["status"], "completed");
+    assert_eq!(
+        agent_wait["payload"]["result"]["output"],
+        "Echo: execute agent"
+    );
+    assert_eq!(
+        agent_wait["payload"]["result"]["sessionKey"],
+        "agent:main:main"
+    );
 
     let add_job = rpc_req(
         &mut ws,
@@ -502,6 +512,11 @@ async fn deferred_agent_run_executes_via_wait() {
     assert_eq!(wait["ok"], true);
     assert_eq!(wait["payload"]["status"], "completed");
     assert!(wait["payload"]["endedAt"].is_number());
+    assert_eq!(wait["payload"]["result"]["output"], "Echo: deferred hello");
+    assert_eq!(
+        wait["payload"]["result"]["sessionKey"],
+        "agent:main:deferred"
+    );
 
     let history = rpc_req(
         &mut ws,
@@ -604,6 +619,8 @@ async fn chat_abort_cancels_deferred_agent_run() {
     .await;
     assert_eq!(wait["ok"], true);
     assert_eq!(wait["payload"]["status"], "aborted");
+    assert!(wait["payload"]["result"]["output"].is_null());
+    assert_eq!(wait["payload"]["result"]["sessionKey"], "agent:main:abort");
 
     server.stop().await;
 }
