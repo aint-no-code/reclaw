@@ -11,6 +11,7 @@ This document defines the OpenClaw-compatible external hooks ingress implemented
 - `hooksAllowRequestSessionKey` (`RECLAW_HOOKS_ALLOW_REQUEST_SESSION_KEY`, default `false`)
 - `hooksDefaultSessionKey` (`RECLAW_HOOKS_DEFAULT_SESSION_KEY`, optional)
 - `hooksDefaultAgentId` (`RECLAW_HOOKS_DEFAULT_AGENT_ID`, default `main`)
+- `hooksMappings` (static config array, optional)
 
 `hooksEnabled=true` requires `hooksToken` to be configured.
 
@@ -65,3 +66,30 @@ Request body:
 - `agent`: `202` with `{ ok, runId, sessionKey, agentId }`
 - Invalid payload/policy: `400` with explicit error code/message.
 - Invalid/absent token: `401`, rate-limited failures: `429`.
+
+## Mapping Semantics
+
+Paths under `<hooksPath>/<subpath>` can be mapped through `hooksMappings` entries.
+
+Example:
+
+```toml
+[[hooksMappings]]
+path = "github/push"
+action = "agent"
+message = "new github event"
+sessionKey = "hook:github"
+
+[[hooksMappings]]
+path = "watchdog/ping"
+action = "wake"
+text = "watchdog ping"
+wakeMode = "next-heartbeat"
+```
+
+Rules:
+
+- mapping path compare is normalized (`/` trimming and slash collapsing)
+- `action = "agent"` requires `message`
+- `action = "wake"` requires `text`
+- mapping-provided `sessionKey` is allowed regardless of `hooksAllowRequestSessionKey`

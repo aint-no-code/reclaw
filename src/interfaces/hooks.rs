@@ -10,7 +10,10 @@ use serde::Deserialize;
 use serde_json::{Map, Value, json};
 
 use crate::{
-    application::{config::RuntimeConfig, state::SharedState},
+    application::{
+        config::{HookMappingAction, HookMappingConfig, RuntimeConfig},
+        state::SharedState,
+    },
     protocol::ERROR_INVALID_REQUEST,
     rpc::{
         SessionContext,
@@ -81,6 +84,12 @@ struct HookAgentNormalized {
     agent_id: Option<String>,
     wake_mode: HookWakeMode,
     session_key: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HookSessionKeySource {
+    Request,
+    Mapping,
 }
 
 pub async fn root_handler(
@@ -158,9 +167,30 @@ async fn handle_request(
     }
 
     match normalized_subpath {
-        "wake" => handle_wake_hook(&state, &payload).await,
-        "agent" => handle_agent_hook(&state, &payload).await,
-        _ => error_response(StatusCode::NOT_FOUND, "NOT_FOUND", "not found"),
+        "wake" => {
+            let normalized = match normalize_wake_payload(&payload) {
+                Ok(value) => value,
+                Err(error) => {
+                    return error_response(StatusCode::BAD_REQUEST, "INVALID_REQUEST", error);
+                }
+            };
+            dispatch_wake(state, normalized).await
+        }
+        "agent" => {
+            let normalized = match normalize_agent_payload(&payload) {
+                Ok(value) => value,
+                Err(error) => {
+                    return error_response(StatusCode::BAD_REQUEST, "INVALID_REQUEST", error);
+                }
+            };
+            dispatch_agent(state, normalized, HookSessionKeySource::Request).await
+        }
+        _ => {
+            let Some(mapped) = resolve_mapping(&state, normalized_subpath) else {
+                return error_response(StatusCode::NOT_FOUND, "NOT_FOUND", "not found");
+            };
+            dispatch_mapping(state, mapped).await
+        }
     }
 }
 
@@ -206,15 +236,10 @@ async fn authorize_request(
     Ok(())
 }
 
-async fn handle_wake_hook(
-    state: &SharedState,
-    payload: &Map<String, Value>,
+async fn dispatch_wake(
+    state: SharedState,
+    normalized: HookWakeNormalized,
 ) -> (StatusCode, Json<Value>) {
-    let normalized = match normalize_wake_payload(payload) {
-        Ok(value) => value,
-        Err(error) => return error_response(StatusCode::BAD_REQUEST, "INVALID_REQUEST", error),
-    };
-
     let wake_entry = json!({
         "ts": now_unix_ms(),
         "text": normalized.text,
@@ -233,7 +258,7 @@ async fn handle_wake_hook(
             "reason": "hook:wake",
         });
         let session = hook_session("hooks-wake");
-        if let Err(error) = system::handle_wake(state, &session, Some(&wake_params)).await {
+        if let Err(error) = system::handle_wake(&state, &session, Some(&wake_params)).await {
             return map_error_shape(error);
         }
     } else {
@@ -256,17 +281,13 @@ async fn handle_wake_hook(
     )
 }
 
-async fn handle_agent_hook(
-    state: &SharedState,
-    payload: &Map<String, Value>,
+async fn dispatch_agent(
+    state: SharedState,
+    normalized: HookAgentNormalized,
+    source: HookSessionKeySource,
 ) -> (StatusCode, Json<Value>) {
-    let normalized = match normalize_agent_payload(payload) {
-        Ok(value) => value,
-        Err(error) => return error_response(StatusCode::BAD_REQUEST, "INVALID_REQUEST", error),
-    };
-
     let session_key =
-        match resolve_session_key_policy(state.config(), normalized.session_key.clone()) {
+        match resolve_session_key_policy(state.config(), normalized.session_key, source) {
             Ok(value) => value,
             Err(error) => return error_response(StatusCode::BAD_REQUEST, "INVALID_REQUEST", error),
         };
@@ -279,7 +300,7 @@ async fn handle_agent_hook(
             "reason": "hook:agent",
         });
         let session = hook_session("hooks-agent-wake");
-        if let Err(error) = system::handle_wake(state, &session, Some(&wake_params)).await {
+        if let Err(error) = system::handle_wake(&state, &session, Some(&wake_params)).await {
             return map_error_shape(error);
         }
     }
@@ -292,7 +313,7 @@ async fn handle_agent_hook(
         "idempotencyKey": format!("hook-agent-{}", uuid::Uuid::new_v4()),
     });
     let session = hook_session("hooks-agent");
-    let response = match methods::agent::handle_agent(state, &session, Some(&params)).await {
+    let response = match methods::agent::handle_agent(&state, &session, Some(&params)).await {
         Ok(payload) => payload,
         Err(error) => return map_error_shape(error),
     };
@@ -312,6 +333,66 @@ async fn handle_agent_hook(
             "agentId": agent_id,
         })),
     )
+}
+
+async fn dispatch_mapping(
+    state: SharedState,
+    mapping: HookMappingConfig,
+) -> (StatusCode, Json<Value>) {
+    match mapping.action {
+        HookMappingAction::Wake => {
+            let text = trim_non_empty(mapping.text.clone())
+                .ok_or_else(|| "hook mapping requires text".to_owned());
+            let text = match text {
+                Ok(value) => value,
+                Err(error) => {
+                    return error_response(StatusCode::BAD_REQUEST, "INVALID_REQUEST", error);
+                }
+            };
+            let wake = HookWakeNormalized {
+                text,
+                mode: HookWakeMode::from_raw(mapping.wake_mode.as_deref()),
+            };
+            dispatch_wake(state, wake).await
+        }
+        HookMappingAction::Agent => {
+            let message = trim_non_empty(mapping.message.clone())
+                .ok_or_else(|| "hook mapping requires message".to_owned());
+            let message = match message {
+                Ok(value) => value,
+                Err(error) => {
+                    return error_response(StatusCode::BAD_REQUEST, "INVALID_REQUEST", error);
+                }
+            };
+            let agent = HookAgentNormalized {
+                message,
+                name: trim_non_empty(mapping.name.clone()).unwrap_or_else(|| "Hook".to_owned()),
+                agent_id: trim_non_empty(mapping.agent_id.clone()),
+                wake_mode: HookWakeMode::from_raw(mapping.wake_mode.as_deref()),
+                session_key: trim_non_empty(mapping.session_key.clone()),
+            };
+            dispatch_agent(state, agent, HookSessionKeySource::Mapping).await
+        }
+    }
+}
+
+fn resolve_mapping(state: &SharedState, subpath: &str) -> Option<HookMappingConfig> {
+    let target = normalize_mapping_path(subpath);
+    state
+        .config()
+        .hooks_mappings
+        .iter()
+        .find(|mapping| normalize_mapping_path(&mapping.path) == target)
+        .cloned()
+}
+
+fn normalize_mapping_path(path: &str) -> String {
+    path.trim()
+        .trim_matches('/')
+        .split('/')
+        .filter(|segment| !segment.trim().is_empty())
+        .collect::<Vec<_>>()
+        .join("/")
 }
 
 fn normalize_wake_payload(payload: &Map<String, Value>) -> Result<HookWakeNormalized, String> {
@@ -351,9 +432,10 @@ fn normalize_agent_payload(payload: &Map<String, Value>) -> Result<HookAgentNorm
 fn resolve_session_key_policy(
     config: &RuntimeConfig,
     requested_session_key: Option<String>,
+    source: HookSessionKeySource,
 ) -> Result<String, String> {
     if let Some(session_key) = requested_session_key {
-        if !config.hooks_allow_request_session_key {
+        if source == HookSessionKeySource::Request && !config.hooks_allow_request_session_key {
             return Err(HOOKS_SESSION_POLICY_ERROR.to_owned());
         }
         return Ok(session_key);
@@ -460,7 +542,10 @@ fn error_response(
 
 #[cfg(test)]
 mod tests {
-    use super::{HOOKS_SESSION_POLICY_ERROR, has_token_query, resolve_session_key_policy};
+    use super::{
+        HOOKS_SESSION_POLICY_ERROR, HookSessionKeySource, has_token_query, normalize_mapping_path,
+        resolve_session_key_policy,
+    };
     use crate::application::config::RuntimeConfig;
 
     #[test]
@@ -480,7 +565,17 @@ mod tests {
             std::path::PathBuf::from(":memory:"),
         );
 
-        let result = resolve_session_key_policy(&config, Some("hook:custom".to_owned()));
+        let result = resolve_session_key_policy(
+            &config,
+            Some("hook:custom".to_owned()),
+            HookSessionKeySource::Request,
+        );
         assert_eq!(result, Err(HOOKS_SESSION_POLICY_ERROR.to_owned()));
+    }
+
+    #[test]
+    fn normalize_mapping_path_trims_and_collapses_slashes() {
+        assert_eq!(normalize_mapping_path("/github/push/"), "github/push");
+        assert_eq!(normalize_mapping_path("  github//push  "), "github/push");
     }
 }

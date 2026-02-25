@@ -1,5 +1,8 @@
 use futures_util::SinkExt;
-use reclaw_core::{application::config::AuthMode, protocol::PROTOCOL_VERSION};
+use reclaw_core::{
+    application::config::{AuthMode, HookMappingAction, HookMappingConfig},
+    protocol::PROTOCOL_VERSION,
+};
 use serde_json::{Value, json};
 use tokio_tungstenite::tungstenite::Message;
 
@@ -238,6 +241,85 @@ async fn hooks_wake_updates_last_heartbeat_for_now_mode() {
     let heartbeat = rpc_req(&mut ws, "wake-1", "last-heartbeat", Some(json!({}))).await;
     assert_eq!(heartbeat["ok"], true);
     assert_eq!(heartbeat["payload"]["reason"], "hook:wake");
+
+    server.stop().await;
+}
+
+#[tokio::test]
+async fn hooks_mapping_dispatches_agent_action() {
+    let server = spawn_server_with(AuthMode::None, |config| {
+        config.hooks_enabled = true;
+        config.hooks_token = Some("hooks-token".to_owned());
+        config.hooks_mappings = vec![HookMappingConfig {
+            id: Some("github".to_owned()),
+            path: "github/push".to_owned(),
+            action: HookMappingAction::Agent,
+            wake_mode: None,
+            text: None,
+            message: Some("mapped github event".to_owned()),
+            name: Some("GitHub".to_owned()),
+            agent_id: Some("mapped-agent".to_owned()),
+            session_key: Some("hook:mapped".to_owned()),
+        }];
+    })
+    .await;
+
+    let client = reqwest::Client::new();
+    let response = client
+        .post(format!("http://{}/hooks/github/push", server.addr))
+        .bearer_auth("hooks-token")
+        .json(&json!({}))
+        .send()
+        .await
+        .expect("hooks request should return");
+
+    assert_eq!(response.status(), reqwest::StatusCode::ACCEPTED);
+    let payload: Value = response.json().await.expect("response should be json");
+    assert_eq!(payload["ok"], true);
+    assert_eq!(payload["sessionKey"], "hook:mapped");
+    assert_eq!(payload["agentId"], "mapped-agent");
+    assert!(
+        payload["runId"]
+            .as_str()
+            .is_some_and(|value| !value.is_empty())
+    );
+
+    assert_session_has_history(server.addr, "hook:mapped").await;
+    server.stop().await;
+}
+
+#[tokio::test]
+async fn hooks_mapping_dispatches_wake_action() {
+    let server = spawn_server_with(AuthMode::None, |config| {
+        config.hooks_enabled = true;
+        config.hooks_token = Some("hooks-token".to_owned());
+        config.hooks_mappings = vec![HookMappingConfig {
+            id: Some("watchdog".to_owned()),
+            path: "/watchdog/ping/".to_owned(),
+            action: HookMappingAction::Wake,
+            wake_mode: Some("next-heartbeat".to_owned()),
+            text: Some("watchdog ping".to_owned()),
+            message: None,
+            name: None,
+            agent_id: None,
+            session_key: None,
+        }];
+    })
+    .await;
+
+    let client = reqwest::Client::new();
+    let response = client
+        .post(format!("http://{}/hooks/watchdog/ping", server.addr))
+        .bearer_auth("hooks-token")
+        .json(&json!({}))
+        .send()
+        .await
+        .expect("hooks request should return");
+
+    assert_eq!(response.status(), reqwest::StatusCode::OK);
+    let payload: Value = response.json().await.expect("response should be json");
+    assert_eq!(payload["ok"], true);
+    assert_eq!(payload["mode"], "next-heartbeat");
 
     server.stop().await;
 }

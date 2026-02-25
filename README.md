@@ -163,11 +163,13 @@ OpenClaw-compatible `/hooks/*` ingress is available behind explicit config:
 - `hooksAllowRequestSessionKey` / `RECLAW_HOOKS_ALLOW_REQUEST_SESSION_KEY` (default `false`)
 - `hooksDefaultSessionKey` / `RECLAW_HOOKS_DEFAULT_SESSION_KEY` (optional)
 - `hooksDefaultAgentId` / `RECLAW_HOOKS_DEFAULT_AGENT_ID` (default `main`)
+- `hooksMappings` (static config array for path-based mapped actions)
 
 Supported routes once enabled:
 
 - `POST <hooksPath>/wake` body `{ "text": "...", "mode": "now|next-heartbeat" }`
 - `POST <hooksPath>/agent` body `{ "message": "...", "agentId"?, "sessionKey"? }`
+- `POST <hooksPath>/<custom>` mapped by `hooksMappings` entries
 
 ## LLM Compatibility Endpoints
 

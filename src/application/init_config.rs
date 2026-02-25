@@ -216,6 +216,12 @@ dbPath = \"{}\"\n\
 # hooksAllowRequestSessionKey = false\n\
 # hooksDefaultSessionKey = \"hook:default\"\n\
 # hooksDefaultAgentId = \"main\"\n\
+# [[hooksMappings]]\n\
+# path = \"github/push\"\n\
+# action = \"agent\" # or \"wake\"\n\
+# message = \"new github event\"\n\
+# sessionKey = \"hook:github\"\n\
+# agentId = \"main\"\n\
 \n\
 # HTTP compatibility endpoints (disabled by default).\n\
 # openaiChatCompletionsEnabled = true\n\

@@ -209,6 +209,36 @@ impl AuthMode {
     }
 }
 
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum HookMappingAction {
+    Wake,
+    #[default]
+    Agent,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct HookMappingConfig {
+    #[serde(default)]
+    pub id: Option<String>,
+    pub path: String,
+    #[serde(default)]
+    pub action: HookMappingAction,
+    #[serde(default)]
+    pub wake_mode: Option<String>,
+    #[serde(default)]
+    pub text: Option<String>,
+    #[serde(default)]
+    pub message: Option<String>,
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub agent_id: Option<String>,
+    #[serde(default)]
+    pub session_key: Option<String>,
+}
+
 #[derive(Debug, Clone)]
 pub struct RuntimeConfig {
     pub host: IpAddr,
@@ -237,6 +267,7 @@ pub struct RuntimeConfig {
     pub hooks_allow_request_session_key: bool,
     pub hooks_default_session_key: Option<String>,
     pub hooks_default_agent_id: String,
+    pub hooks_mappings: Vec<HookMappingConfig>,
     pub openai_chat_completions_enabled: bool,
     pub openresponses_enabled: bool,
     pub max_payload_bytes: usize,
@@ -415,6 +446,7 @@ impl RuntimeConfig {
                 .or(static_config.hooks_default_agent_id),
         )
         .unwrap_or_else(|| "main".to_owned());
+        let hooks_mappings = static_config.hooks_mappings.unwrap_or_default();
         if hooks_enabled && hooks_token.is_none() {
             return Err("hooks.enabled requires hooks.token".to_owned());
         }
@@ -486,6 +518,7 @@ impl RuntimeConfig {
             hooks_allow_request_session_key,
             hooks_default_session_key,
             hooks_default_agent_id,
+            hooks_mappings,
             openai_chat_completions_enabled,
             openresponses_enabled,
             max_payload_bytes,
@@ -538,6 +571,7 @@ impl RuntimeConfig {
             hooks_allow_request_session_key: false,
             hooks_default_session_key: None,
             hooks_default_agent_id: "main".to_owned(),
+            hooks_mappings: Vec::new(),
             openai_chat_completions_enabled: false,
             openresponses_enabled: false,
             max_payload_bytes: 512 * 1024,
@@ -587,6 +621,7 @@ struct StaticConfigValues {
     hooks_allow_request_session_key: Option<bool>,
     hooks_default_session_key: Option<String>,
     hooks_default_agent_id: Option<String>,
+    hooks_mappings: Option<Vec<HookMappingConfig>>,
     openai_chat_completions_enabled: Option<bool>,
     openresponses_enabled: Option<bool>,
     max_payload_bytes: Option<usize>,
@@ -657,6 +692,7 @@ impl StaticConfigValues {
             &mut self.hooks_default_agent_id,
             other.hooks_default_agent_id,
         );
+        override_option(&mut self.hooks_mappings, other.hooks_mappings);
         override_option(
             &mut self.openai_chat_completions_enabled,
             other.openai_chat_completions_enabled,
@@ -1049,6 +1085,25 @@ mod tests {
             Some("hook:default")
         );
         assert_eq!(runtime.hooks_default_agent_id, "default-agent");
+    }
+
+    #[test]
+    fn runtime_config_supports_hooks_mappings() {
+        let temp_dir = tempfile::tempdir().expect("temp dir should be created");
+        let config_path = temp_dir.path().join("config.toml");
+        fs::write(
+            &config_path,
+            "hooksEnabled = true\nhooksToken = \"hooks-token\"\n[[hooksMappings]]\npath = \"github/push\"\naction = \"agent\"\nmessage = \"mapped message\"\nsessionKey = \"hook:mapped\"\nagentId = \"ops\"\n[[hooksMappings]]\npath = \"watchdog\"\naction = \"wake\"\ntext = \"ping\"\nwakeMode = \"next-heartbeat\"\n",
+        )
+        .expect("config should write");
+
+        let mut args = empty_args();
+        args.config = Some(config_path);
+
+        let runtime = RuntimeConfig::from_args(args).expect("runtime config should build");
+        assert_eq!(runtime.hooks_mappings.len(), 2);
+        assert_eq!(runtime.hooks_mappings[0].path, "github/push");
+        assert_eq!(runtime.hooks_mappings[1].path, "watchdog");
     }
 
     #[test]

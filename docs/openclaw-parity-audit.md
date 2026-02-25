@@ -14,6 +14,7 @@ Scope compared: `openclaw/src/gateway/**` and `openclaw/src/channels/plugins/**`
   - `POST <hooksPath>/wake`
   - `POST <hooksPath>/agent`
   - policy controls for request `sessionKey` usage and default session/agent IDs
+  - static `hooksMappings` path dispatch for mapped wake/agent actions
 - OpenAI/OpenResponses compatibility routes are implemented with gateway auth:
   - `POST /v1/chat/completions`
   - `POST /v1/responses`
@@ -33,13 +34,14 @@ Scope compared: `openclaw/src/gateway/**` and `openclaw/src/channels/plugins/**`
 - Current Rust status:
   - `chat.send` uses deterministic echo response and does not run full agent/tool execution pipeline.
 
-2. Hooks mapping subsystem (`/hooks/*`) for path-based template dispatch parity.
+2. Hooks advanced mapping parity (`/hooks/*`) for templated transforms and source/path filters.
 - OpenClaw references:
   - `src/gateway/hooks-mapping.ts`
   - `src/gateway/server-http.ts` (`createHooksRequestHandler`)
 - Current Rust status:
   - `/hooks/wake` and `/hooks/agent` are implemented with auth + base policies.
-  - Path-based mapping engine parity is not implemented yet.
+  - static path-based mappings are implemented (`hooksMappings`) for `wake` and `agent` actions.
+  - advanced template rendering, transform modules, and source match filters are not implemented yet.
 
 3. Plugin/channel runtime parity (dynamic channel plugin system).
 - OpenClaw references:
@@ -99,7 +101,7 @@ Scope compared: `openclaw/src/gateway/**` and `openclaw/src/channels/plugins/**`
 
 ## Recommended next implementation order
 
-1. Hooks mapping subsystem (`/hooks/*`) + conformance tests.
+1. Hooks advanced mapping parity (`/hooks/*`) + conformance tests.
 2. Agent runtime upgrade (replace echo path with real execution + stream events).
 3. Channel plugin runtime abstraction and plugin HTTP bridge.
 4. Control UI/canvas compatibility surfaces.
