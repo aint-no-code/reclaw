@@ -70,6 +70,17 @@ impl SqliteStore {
         messages.reverse();
         Ok(messages)
     }
+
+    pub async fn count_chat_messages(&self) -> Result<u64, DomainError> {
+        let count = sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM chat_messages")
+            .fetch_one(self.pool())
+            .await
+            .map_err(|error| {
+                DomainError::Storage(format!("failed to count chat messages: {error}"))
+            })?;
+
+        Ok(u64::try_from(count).unwrap_or(0))
+    }
 }
 
 fn map_chat_row(

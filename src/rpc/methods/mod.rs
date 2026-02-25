@@ -1,11 +1,29 @@
 pub mod agent;
+pub mod agents;
+pub mod approvals;
+pub mod browser;
+pub mod channels;
 pub mod chat;
 pub mod config;
 pub mod cron;
+pub mod device;
+pub mod doctor;
 pub mod health;
+pub mod logs;
+pub mod models;
 pub mod nodes;
+pub mod send;
 pub mod sessions;
+pub mod skills;
 pub mod status;
+pub mod system;
+pub mod talk;
+pub mod tools;
+pub mod tts;
+pub mod update;
+pub mod usage;
+pub mod voicewake;
+pub mod wizard;
 
 use serde::de::DeserializeOwned;
 use serde_json::{Map, Value};
@@ -128,45 +146,7 @@ pub const GATEWAY_EVENTS: &[&str] = &[
     "update.available",
 ];
 
-const IMPLEMENTED_METHODS: &[&str] = &[
-    "health",
-    "status",
-    "config.get",
-    "config.set",
-    "config.apply",
-    "config.patch",
-    "config.schema",
-    "sessions.list",
-    "sessions.preview",
-    "sessions.patch",
-    "sessions.reset",
-    "sessions.delete",
-    "sessions.compact",
-    "agent",
-    "agent.identity.get",
-    "agent.wait",
-    "chat.history",
-    "chat.abort",
-    "chat.send",
-    "cron.list",
-    "cron.status",
-    "cron.add",
-    "cron.update",
-    "cron.remove",
-    "cron.run",
-    "cron.runs",
-    "node.pair.request",
-    "node.pair.list",
-    "node.pair.approve",
-    "node.pair.reject",
-    "node.pair.verify",
-    "node.rename",
-    "node.list",
-    "node.describe",
-    "node.invoke",
-    "node.invoke.result",
-    "node.event",
-];
+const IMPLEMENTED_METHODS: &[&str] = BASE_METHODS;
 
 #[must_use]
 pub fn known_methods() -> Vec<String> {
@@ -250,7 +230,7 @@ mod tests {
         assert!(is_known_method("health"));
         assert!(is_implemented_method("health"));
         assert!(is_known_method("wizard.start"));
-        assert!(!is_implemented_method("wizard.start"));
-        assert!(implemented_methods().len() > 10);
+        assert!(is_implemented_method("wizard.start"));
+        assert_eq!(implemented_methods().len(), super::BASE_METHODS.len());
     }
 }

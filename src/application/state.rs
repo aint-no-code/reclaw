@@ -4,7 +4,7 @@ use std::{
         Arc,
         atomic::{AtomicU64, Ordering},
     },
-    time::Instant,
+    time::{Duration, Instant},
 };
 
 use serde_json::{Map, Value, json};
@@ -15,7 +15,7 @@ use crate::{
     domain::{
         error::DomainError,
         models::{
-            AgentRunRecord, ChatMessage, CronJobPatch, CronJobRecord, CronRunRecord,
+            AgentRunRecord, ChatMessage, ConfigEntry, CronJobPatch, CronJobRecord, CronRunRecord,
             NodeEventRecord, NodeInvokeInput, NodeInvokeRecord, NodePairRequestInput,
             NodePairRequestRecord, NodeRecord, SessionRecord,
         },
@@ -38,6 +38,7 @@ struct InnerState {
     events: Vec<String>,
     clients: RwLock<HashMap<String, ConnectedClient>>,
     auth_rate_limiter: AuthRateLimiter,
+    control_plane_rate_limiter: AuthRateLimiter,
     presence_version: AtomicU64,
     health_version: AtomicU64,
     cron_enabled: RwLock<bool>,
@@ -76,6 +77,7 @@ impl SharedState {
                     config.auth_max_attempts,
                     config.auth_window,
                 ),
+                control_plane_rate_limiter: AuthRateLimiter::new(3, Duration::from_secs(60)),
                 started_at: Instant::now(),
                 methods,
                 events,
@@ -118,6 +120,11 @@ impl SharedState {
     #[must_use]
     pub fn auth_rate_limiter(&self) -> AuthRateLimiter {
         self.inner.auth_rate_limiter.clone()
+    }
+
+    #[must_use]
+    pub fn control_plane_rate_limiter(&self) -> AuthRateLimiter {
+        self.inner.control_plane_rate_limiter.clone()
     }
 
     pub async fn register_client(&self, client: ConnectedClient) -> Result<(), DomainError> {
@@ -236,6 +243,56 @@ impl SharedState {
         self.inner.store.save_config_doc(&next).await
     }
 
+    pub async fn get_config_entry_value(&self, key: &str) -> Result<Option<Value>, DomainError> {
+        Ok(self
+            .inner
+            .store
+            .get_config_entry(key)
+            .await?
+            .map(|entry| entry.value))
+    }
+
+    pub async fn set_config_entry_value(
+        &self,
+        key: &str,
+        value: &Value,
+    ) -> Result<ConfigEntry, DomainError> {
+        self.inner.store.set_config_entry(key, value).await
+    }
+
+    pub async fn delete_config_entry_value(&self, key: &str) -> Result<bool, DomainError> {
+        self.inner.store.delete_config_entry(key).await
+    }
+
+    pub async fn list_config_entries(
+        &self,
+        prefix: &str,
+        limit: Option<usize>,
+    ) -> Result<Vec<ConfigEntry>, DomainError> {
+        self.inner.store.list_config_entries(prefix, limit).await
+    }
+
+    pub async fn append_gateway_log(
+        &self,
+        level: &str,
+        message: &str,
+        method: Option<&str>,
+        conn_id: Option<&str>,
+    ) -> Result<(), DomainError> {
+        let ts = now_unix_ms();
+        let key = format!("logs/{ts}-{}", uuid::Uuid::new_v4());
+        let entry = json!({
+            "id": key,
+            "level": level,
+            "message": message,
+            "method": method,
+            "connId": conn_id,
+            "ts": ts,
+        });
+        let _ = self.set_config_entry_value(&key, &entry).await?;
+        Ok(())
+    }
+
     pub async fn list_sessions(&self) -> Result<Vec<SessionRecord>, DomainError> {
         self.inner.store.list_sessions().await
     }
@@ -282,12 +339,20 @@ impl SharedState {
             .await
     }
 
+    pub async fn count_chat_messages(&self) -> Result<u64, DomainError> {
+        self.inner.store.count_chat_messages().await
+    }
+
     pub async fn upsert_agent_run(&self, run: &AgentRunRecord) -> Result<(), DomainError> {
         self.inner.store.upsert_agent_run(run).await
     }
 
     pub async fn get_agent_run(&self, run_id: &str) -> Result<Option<AgentRunRecord>, DomainError> {
         self.inner.store.get_agent_run(run_id).await
+    }
+
+    pub async fn count_agent_runs(&self) -> Result<u64, DomainError> {
+        self.inner.store.count_agent_runs().await
     }
 
     pub async fn list_cron_jobs(&self) -> Result<Vec<CronJobRecord>, DomainError> {

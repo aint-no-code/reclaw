@@ -56,6 +56,17 @@ impl SqliteStore {
 
         row.map(map_agent_row).transpose()
     }
+
+    pub async fn count_agent_runs(&self) -> Result<u64, DomainError> {
+        let count = sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM agent_runs")
+            .fetch_one(self.pool())
+            .await
+            .map_err(|error| {
+                DomainError::Storage(format!("failed to count agent runs: {error}"))
+            })?;
+
+        Ok(u64::try_from(count).unwrap_or(0))
+    }
 }
 
 fn map_agent_row(row: AgentRow) -> Result<AgentRunRecord, DomainError> {

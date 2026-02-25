@@ -17,7 +17,7 @@ use crate::{
         ConnectParams, ERROR_INVALID_REQUEST, ErrorShape, GatewayPolicy, HelloFeatures, HelloOk,
         HelloServer, PROTOCOL_VERSION, parse_request_frame, response_error, response_ok,
     },
-    rpc::{SessionContext, dispatcher::dispatch_request},
+    rpc::{SessionContext, dispatcher::dispatch_request, policy::default_operator_scopes},
     security::auth::{auth_failure_error, authorize},
     storage::now_unix_ms,
 };
@@ -208,7 +208,10 @@ async fn perform_handshake(
     limiter.reset(&auth_key).await;
 
     let conn_id = uuid::Uuid::new_v4().to_string();
-    let scopes = sanitize_scopes(&connect_params.scopes);
+    let mut scopes = sanitize_scopes(&connect_params.scopes);
+    if role == "operator" && scopes.is_empty() {
+        scopes = default_operator_scopes();
+    }
     let connected_at = Instant::now();
     let connected_at_ms = now_unix_ms();
 
