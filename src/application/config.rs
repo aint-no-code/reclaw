@@ -20,6 +20,8 @@ const DEFAULT_AUTH_MAX_ATTEMPTS: u32 = 20;
 const DEFAULT_AUTH_WINDOW_MS: u64 = 60_000;
 const DEFAULT_LOG_FILTER: &str = "info";
 const DEFAULT_JSON_LOGS: bool = false;
+const DEFAULT_HOOKS_PATH: &str = "/hooks";
+const DEFAULT_HOOKS_MAX_BODY_BYTES: usize = 256 * 1024;
 
 #[derive(Debug, Clone, Parser)]
 #[command(
@@ -99,6 +101,27 @@ pub struct Args {
 
     #[arg(long, env = "RECLAW_OPENRESPONSES_ENABLED")]
     pub openresponses_enabled: Option<bool>,
+
+    #[arg(long, env = "RECLAW_HOOKS_ENABLED")]
+    pub hooks_enabled: Option<bool>,
+
+    #[arg(long, env = "RECLAW_HOOKS_TOKEN")]
+    pub hooks_token: Option<String>,
+
+    #[arg(long, env = "RECLAW_HOOKS_PATH")]
+    pub hooks_path: Option<String>,
+
+    #[arg(long, env = "RECLAW_HOOKS_MAX_BODY_BYTES")]
+    pub hooks_max_body_bytes: Option<usize>,
+
+    #[arg(long, env = "RECLAW_HOOKS_ALLOW_REQUEST_SESSION_KEY")]
+    pub hooks_allow_request_session_key: Option<bool>,
+
+    #[arg(long, env = "RECLAW_HOOKS_DEFAULT_SESSION_KEY")]
+    pub hooks_default_session_key: Option<String>,
+
+    #[arg(long, env = "RECLAW_HOOKS_DEFAULT_AGENT_ID")]
+    pub hooks_default_agent_id: Option<String>,
 
     #[arg(long, env = "RECLAW_MAX_PAYLOAD_BYTES")]
     pub max_payload_bytes: Option<usize>,
@@ -207,6 +230,13 @@ pub struct RuntimeConfig {
     pub whatsapp_webhook_token: Option<String>,
     pub whatsapp_outbound_url: Option<String>,
     pub whatsapp_outbound_token: Option<String>,
+    pub hooks_enabled: bool,
+    pub hooks_token: Option<String>,
+    pub hooks_path: String,
+    pub hooks_max_body_bytes: usize,
+    pub hooks_allow_request_session_key: bool,
+    pub hooks_default_session_key: Option<String>,
+    pub hooks_default_agent_id: String,
     pub openai_chat_completions_enabled: bool,
     pub openresponses_enabled: bool,
     pub max_payload_bytes: usize,
@@ -358,6 +388,36 @@ impl RuntimeConfig {
             args.whatsapp_outbound_token
                 .or(static_config.whatsapp_outbound_token),
         );
+        let hooks_enabled = args
+            .hooks_enabled
+            .or(static_config.hooks_enabled)
+            .unwrap_or(false);
+        let hooks_token = normalize_non_empty(args.hooks_token.or(static_config.hooks_token));
+        let hooks_path = normalize_hooks_path(
+            args.hooks_path
+                .or(static_config.hooks_path)
+                .unwrap_or_else(|| DEFAULT_HOOKS_PATH.to_owned()),
+        )?;
+        let hooks_max_body_bytes = args
+            .hooks_max_body_bytes
+            .or(static_config.hooks_max_body_bytes)
+            .unwrap_or(DEFAULT_HOOKS_MAX_BODY_BYTES);
+        let hooks_allow_request_session_key = args
+            .hooks_allow_request_session_key
+            .or(static_config.hooks_allow_request_session_key)
+            .unwrap_or(false);
+        let hooks_default_session_key = normalize_non_empty(
+            args.hooks_default_session_key
+                .or(static_config.hooks_default_session_key),
+        );
+        let hooks_default_agent_id = normalize_non_empty(
+            args.hooks_default_agent_id
+                .or(static_config.hooks_default_agent_id),
+        )
+        .unwrap_or_else(|| "main".to_owned());
+        if hooks_enabled && hooks_token.is_none() {
+            return Err("hooks.enabled requires hooks.token".to_owned());
+        }
         let openai_chat_completions_enabled = args
             .openai_chat_completions_enabled
             .or(static_config.openai_chat_completions_enabled)
@@ -389,6 +449,9 @@ impl RuntimeConfig {
         if max_buffered_bytes == 0 {
             return Err("max_buffered_bytes must be greater than 0".to_owned());
         }
+        if hooks_max_body_bytes == 0 {
+            return Err("hooks_max_body_bytes must be greater than 0".to_owned());
+        }
         if auth_max_attempts == 0 {
             return Err("auth_max_attempts must be greater than 0".to_owned());
         }
@@ -416,6 +479,13 @@ impl RuntimeConfig {
             whatsapp_webhook_token,
             whatsapp_outbound_url,
             whatsapp_outbound_token,
+            hooks_enabled,
+            hooks_token,
+            hooks_path,
+            hooks_max_body_bytes,
+            hooks_allow_request_session_key,
+            hooks_default_session_key,
+            hooks_default_agent_id,
             openai_chat_completions_enabled,
             openresponses_enabled,
             max_payload_bytes,
@@ -461,6 +531,13 @@ impl RuntimeConfig {
             whatsapp_webhook_token: None,
             whatsapp_outbound_url: None,
             whatsapp_outbound_token: None,
+            hooks_enabled: false,
+            hooks_token: None,
+            hooks_path: DEFAULT_HOOKS_PATH.to_owned(),
+            hooks_max_body_bytes: DEFAULT_HOOKS_MAX_BODY_BYTES,
+            hooks_allow_request_session_key: false,
+            hooks_default_session_key: None,
+            hooks_default_agent_id: "main".to_owned(),
             openai_chat_completions_enabled: false,
             openresponses_enabled: false,
             max_payload_bytes: 512 * 1024,
@@ -503,6 +580,13 @@ struct StaticConfigValues {
     whatsapp_webhook_token: Option<String>,
     whatsapp_outbound_url: Option<String>,
     whatsapp_outbound_token: Option<String>,
+    hooks_enabled: Option<bool>,
+    hooks_token: Option<String>,
+    hooks_path: Option<String>,
+    hooks_max_body_bytes: Option<usize>,
+    hooks_allow_request_session_key: Option<bool>,
+    hooks_default_session_key: Option<String>,
+    hooks_default_agent_id: Option<String>,
     openai_chat_completions_enabled: Option<bool>,
     openresponses_enabled: Option<bool>,
     max_payload_bytes: Option<usize>,
@@ -556,6 +640,22 @@ impl StaticConfigValues {
         override_option(
             &mut self.whatsapp_outbound_token,
             other.whatsapp_outbound_token,
+        );
+        override_option(&mut self.hooks_enabled, other.hooks_enabled);
+        override_option(&mut self.hooks_token, other.hooks_token);
+        override_option(&mut self.hooks_path, other.hooks_path);
+        override_option(&mut self.hooks_max_body_bytes, other.hooks_max_body_bytes);
+        override_option(
+            &mut self.hooks_allow_request_session_key,
+            other.hooks_allow_request_session_key,
+        );
+        override_option(
+            &mut self.hooks_default_session_key,
+            other.hooks_default_session_key,
+        );
+        override_option(
+            &mut self.hooks_default_agent_id,
+            other.hooks_default_agent_id,
         );
         override_option(
             &mut self.openai_chat_completions_enabled,
@@ -675,6 +775,23 @@ fn normalize_non_empty(input: Option<String>) -> Option<String> {
     })
 }
 
+fn normalize_hooks_path(input: String) -> Result<String, String> {
+    let mut path = input.trim().to_owned();
+    if path.is_empty() {
+        return Ok(DEFAULT_HOOKS_PATH.to_owned());
+    }
+    if !path.starts_with('/') {
+        path.insert(0, '/');
+    }
+    while path.len() > 1 && path.ends_with('/') {
+        path.pop();
+    }
+    if path == "/" {
+        return Err("hooks.path may not be '/'".to_owned());
+    }
+    Ok(path)
+}
+
 fn resolve_auth_mode(token: Option<String>, password: Option<String>) -> Result<AuthMode, String> {
     let token = normalize_non_empty(token);
     let password = normalize_non_empty(password);
@@ -725,6 +842,13 @@ mod tests {
             whatsapp_outbound_token: None,
             openai_chat_completions_enabled: None,
             openresponses_enabled: None,
+            hooks_enabled: None,
+            hooks_token: None,
+            hooks_path: None,
+            hooks_max_body_bytes: None,
+            hooks_allow_request_session_key: None,
+            hooks_default_session_key: None,
+            hooks_default_agent_id: None,
             max_payload_bytes: None,
             max_buffered_bytes: None,
             handshake_timeout_ms: None,
@@ -885,6 +1009,46 @@ mod tests {
             runtime.whatsapp_outbound_url.as_deref(),
             Some("https://relay.example/whatsapp")
         );
+    }
+
+    #[test]
+    fn runtime_config_requires_hooks_token_when_enabled() {
+        let temp_dir = tempfile::tempdir().expect("temp dir should be created");
+        let config_path = temp_dir.path().join("config.toml");
+        fs::write(&config_path, "hooksEnabled = true\n").expect("config should write");
+
+        let mut args = empty_args();
+        args.config = Some(config_path);
+
+        let result = RuntimeConfig::from_args(args);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn runtime_config_supports_hooks_settings() {
+        let temp_dir = tempfile::tempdir().expect("temp dir should be created");
+        let config_path = temp_dir.path().join("config.toml");
+        fs::write(
+            &config_path,
+            "hooksEnabled = true\nhooksToken = \"hooks-static\"\nhooksPath = \"hooks-ingress\"\nhooksMaxBodyBytes = 777\nhooksAllowRequestSessionKey = true\nhooksDefaultSessionKey = \"hook:default\"\nhooksDefaultAgentId = \"default-agent\"\n",
+        )
+        .expect("config should write");
+
+        let mut args = empty_args();
+        args.config = Some(config_path);
+        args.hooks_token = Some("hooks-cli".to_owned());
+
+        let runtime = RuntimeConfig::from_args(args).expect("runtime config should build");
+        assert!(runtime.hooks_enabled);
+        assert_eq!(runtime.hooks_token.as_deref(), Some("hooks-cli"));
+        assert_eq!(runtime.hooks_path, "/hooks-ingress");
+        assert_eq!(runtime.hooks_max_body_bytes, 777);
+        assert!(runtime.hooks_allow_request_session_key);
+        assert_eq!(
+            runtime.hooks_default_session_key.as_deref(),
+            Some("hook:default")
+        );
+        assert_eq!(runtime.hooks_default_agent_id, "default-agent");
     }
 
     #[test]

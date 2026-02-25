@@ -10,6 +10,10 @@ Scope compared: `openclaw/src/gateway/**` and `openclaw/src/channels/plugins/**`
   - `POST /channels/inbound`
   - `POST /channels/{channel}/inbound`
   - Telegram webhook adapter (`POST /channels/telegram/webhook`)
+- Hooks ingress baseline is implemented with strict token auth:
+  - `POST <hooksPath>/wake`
+  - `POST <hooksPath>/agent`
+  - policy controls for request `sessionKey` usage and default session/agent IDs
 - OpenAI/OpenResponses compatibility routes are implemented with gateway auth:
   - `POST /v1/chat/completions`
   - `POST /v1/responses`
@@ -29,13 +33,13 @@ Scope compared: `openclaw/src/gateway/**` and `openclaw/src/channels/plugins/**`
 - Current Rust status:
   - `chat.send` uses deterministic echo response and does not run full agent/tool execution pipeline.
 
-2. Hooks ingress subsystem (`/hooks/*`) with mapping, policy, and token controls.
+2. Hooks mapping subsystem (`/hooks/*`) for path-based template dispatch parity.
 - OpenClaw references:
-  - `src/gateway/hooks.ts`
   - `src/gateway/hooks-mapping.ts`
   - `src/gateway/server-http.ts` (`createHooksRequestHandler`)
 - Current Rust status:
-  - No hooks endpoint family, no mapping engine, no hook-specific policy layer.
+  - `/hooks/wake` and `/hooks/agent` are implemented with auth + base policies.
+  - Path-based mapping engine parity is not implemented yet.
 
 3. Plugin/channel runtime parity (dynamic channel plugin system).
 - OpenClaw references:
@@ -95,7 +99,7 @@ Scope compared: `openclaw/src/gateway/**` and `openclaw/src/channels/plugins/**`
 
 ## Recommended next implementation order
 
-1. Hooks subsystem (`/hooks/*`) with strict auth + conformance tests.
+1. Hooks mapping subsystem (`/hooks/*`) + conformance tests.
 2. Agent runtime upgrade (replace echo path with real execution + stream events).
 3. Channel plugin runtime abstraction and plugin HTTP bridge.
 4. Control UI/canvas compatibility surfaces.

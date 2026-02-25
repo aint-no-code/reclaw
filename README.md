@@ -6,6 +6,7 @@
 
 - Architecture: `docs/spec/architecture.md`
 - Channel adapters: `docs/spec/channel-adapters.md`
+- Hooks ingress: `docs/spec/hooks.md`
 - Storage: `docs/spec/storage.md`
 - Method contracts: `docs/spec/methods.md`
 
@@ -78,6 +79,7 @@ cargo test --workspace --all-features
 - Channel-specific ingress: `POST /channels/{channel}/inbound`
 - Telegram webhook: `POST /channels/telegram/webhook`
 - Channel webhook dispatch: `POST /channels/{channel}/webhook`
+- Hooks ingress: `POST <hooksPath>/wake` and `POST <hooksPath>/agent` (disabled by default)
 - OpenAI chat completions: `POST /v1/chat/completions` (disabled by default)
 - OpenResponses: `POST /v1/responses` (disabled by default)
 
@@ -149,6 +151,23 @@ Reclaw Core `POST`s a normalized JSON payload to the configured URL:
 - `signalOutboundToken` / `RECLAW_SIGNAL_OUTBOUND_TOKEN`
 - `whatsappOutboundUrl` / `RECLAW_WHATSAPP_OUTBOUND_URL`
 - `whatsappOutboundToken` / `RECLAW_WHATSAPP_OUTBOUND_TOKEN`
+
+### Hooks Ingress
+
+OpenClaw-compatible `/hooks/*` ingress is available behind explicit config:
+
+- `hooksEnabled` / `RECLAW_HOOKS_ENABLED` (`true` to enable)
+- `hooksToken` / `RECLAW_HOOKS_TOKEN` (required when enabled)
+- `hooksPath` / `RECLAW_HOOKS_PATH` (default `/hooks`)
+- `hooksMaxBodyBytes` / `RECLAW_HOOKS_MAX_BODY_BYTES` (default `262144`)
+- `hooksAllowRequestSessionKey` / `RECLAW_HOOKS_ALLOW_REQUEST_SESSION_KEY` (default `false`)
+- `hooksDefaultSessionKey` / `RECLAW_HOOKS_DEFAULT_SESSION_KEY` (optional)
+- `hooksDefaultAgentId` / `RECLAW_HOOKS_DEFAULT_AGENT_ID` (default `main`)
+
+Supported routes once enabled:
+
+- `POST <hooksPath>/wake` body `{ "text": "...", "mode": "now|next-heartbeat" }`
+- `POST <hooksPath>/agent` body `{ "message": "...", "agentId"?, "sessionKey"? }`
 
 ## LLM Compatibility Endpoints
 

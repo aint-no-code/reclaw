@@ -208,6 +208,15 @@ dbPath = \"{}\"\n\
 # whatsappOutboundUrl = \"https://relay.example/whatsapp\"\n\
 # whatsappOutboundToken = \"replace-me\"\n\
 \n\
+# Hooks ingress (OpenClaw-compatible /hooks/* flow).\n\
+# hooksEnabled = true\n\
+# hooksToken = \"replace-me\"\n\
+# hooksPath = \"/hooks\"\n\
+# hooksMaxBodyBytes = 262144\n\
+# hooksAllowRequestSessionKey = false\n\
+# hooksDefaultSessionKey = \"hook:default\"\n\
+# hooksDefaultAgentId = \"main\"\n\
+\n\
 # HTTP compatibility endpoints (disabled by default).\n\
 # openaiChatCompletionsEnabled = true\n\
 # openresponsesEnabled = true\n",

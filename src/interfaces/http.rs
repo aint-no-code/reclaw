@@ -14,7 +14,7 @@ use tracing::info;
 use crate::{
     application::state::SharedState,
     domain::error::DomainError,
-    interfaces::{channels, openai, openresponses, telegram, webhooks, ws},
+    interfaces::{channels, hooks, openai, openresponses, telegram, webhooks, ws},
     rpc::methods::{health, status},
 };
 
@@ -46,6 +46,14 @@ pub fn build_router_with_webhooks(
             post(webhooks::channel_webhook_handler),
         )
         .layer(Extension(webhook_registry));
+
+    if state.config().hooks_enabled {
+        let hooks_base_path = state.config().hooks_path.clone();
+        let hooks_subpath = format!("{hooks_base_path}/{{*subpath}}");
+        router = router
+            .route(hooks_base_path.as_str(), post(hooks::root_handler))
+            .route(hooks_subpath.as_str(), post(hooks::subpath_handler));
+    }
 
     if state.config().openai_chat_completions_enabled {
         router = router.route(
