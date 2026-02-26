@@ -19,6 +19,7 @@ const RUN_STATUS_QUEUED: &str = "queued";
 const RUN_STATUS_RUNNING: &str = "running";
 const RUN_STATUS_COMPLETED: &str = "completed";
 const RUN_STATUS_ERROR: &str = "error";
+const RUN_STATUS_ABORTED: &str = "aborted";
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -181,14 +182,32 @@ async fn execute_agent_run(
         ));
     };
 
+    if let Some(existing) = load_terminal_run(state, &run.id).await? {
+        return Ok(existing);
+    }
+
     if run.status != RUN_STATUS_RUNNING {
         run.status = RUN_STATUS_RUNNING.to_owned();
         run.updated_at_ms = now_unix_ms();
-    }
-    state
-        .upsert_agent_run(&run)
+        state
+            .upsert_agent_run(&run)
+            .await
+            .map_err(map_domain_error)?;
+    } else if state
+        .get_agent_run(&run.id)
         .await
-        .map_err(map_domain_error)?;
+        .map_err(map_domain_error)?
+        .is_none()
+    {
+        state
+            .upsert_agent_run(&run)
+            .await
+            .map_err(map_domain_error)?;
+    }
+
+    if let Some(existing) = load_terminal_run(state, &run.id).await? {
+        return Ok(existing);
+    }
 
     let output = format!("Echo: {}", run.input);
     let messages = vec![
@@ -221,6 +240,10 @@ async fn execute_agent_run(
             .await
             .map_err(map_domain_error)?;
         return Err(map_domain_error(error));
+    }
+
+    if let Some(existing) = load_terminal_run(state, &run.id).await? {
+        return Ok(existing);
     }
 
     let completed_at = now_unix_ms();
@@ -310,15 +333,28 @@ pub async fn handle_agent_wait(
             .map_err(map_domain_error)?
         {
             if run.status == RUN_STATUS_QUEUED {
-                let run = execute_agent_run(state, run).await?;
-                return Ok(agent_wait_payload(&run_id, &run));
+                let updated_at_ms = now_unix_ms();
+                let claimed = state
+                    .transition_agent_run_status(
+                        &run_id,
+                        RUN_STATUS_QUEUED,
+                        RUN_STATUS_RUNNING,
+                        updated_at_ms,
+                    )
+                    .await
+                    .map_err(map_domain_error)?;
+                if claimed {
+                    let mut claimed_run = run;
+                    claimed_run.status = RUN_STATUS_RUNNING.to_owned();
+                    claimed_run.updated_at_ms = updated_at_ms;
+                    let claimed_run = execute_agent_run(state, claimed_run).await?;
+                    return Ok(agent_wait_payload(&run_id, &claimed_run));
+                }
             }
-            if run.status == RUN_STATUS_RUNNING {
+
+            if !is_terminal_status(run.status.as_str()) {
                 if Instant::now() >= deadline {
-                    return Ok(json!({
-                        "runId": run_id,
-                        "status": "timeout",
-                    }));
+                    return Ok(timeout_payload(&run_id));
                 }
                 sleep(Duration::from_millis(50)).await;
                 continue;
@@ -328,10 +364,7 @@ pub async fn handle_agent_wait(
         }
 
         if Instant::now() >= deadline {
-            return Ok(json!({
-                "runId": run_id,
-                "status": "timeout",
-            }));
+            return Ok(timeout_payload(&run_id));
         }
 
         sleep(Duration::from_millis(50)).await;
@@ -360,6 +393,28 @@ fn agent_wait_payload(run_id: &str, run: &AgentRunRecord) -> Value {
             "sessionKey": run.session_key,
         },
     })
+}
+
+fn timeout_payload(run_id: &str) -> Value {
+    json!({
+        "runId": run_id,
+        "status": "timeout",
+    })
+}
+
+fn is_terminal_status(status: &str) -> bool {
+    status == RUN_STATUS_COMPLETED || status == RUN_STATUS_ERROR || status == RUN_STATUS_ABORTED
+}
+
+async fn load_terminal_run(
+    state: &SharedState,
+    run_id: &str,
+) -> Result<Option<AgentRunRecord>, crate::protocol::ErrorShape> {
+    let run = state
+        .get_agent_run(run_id)
+        .await
+        .map_err(map_domain_error)?;
+    Ok(run.filter(|entry| is_terminal_status(entry.status.as_str())))
 }
 
 pub async fn handle_agent_identity(

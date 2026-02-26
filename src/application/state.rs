@@ -347,6 +347,19 @@ impl SharedState {
         self.inner.store.upsert_agent_run(run).await
     }
 
+    pub async fn transition_agent_run_status(
+        &self,
+        run_id: &str,
+        from_status: &str,
+        to_status: &str,
+        updated_at_ms: u64,
+    ) -> Result<bool, DomainError> {
+        self.inner
+            .store
+            .transition_agent_run_status(run_id, from_status, to_status, updated_at_ms)
+            .await
+    }
+
     pub async fn get_agent_run(&self, run_id: &str) -> Result<Option<AgentRunRecord>, DomainError> {
         self.inner.store.get_agent_run(run_id).await
     }

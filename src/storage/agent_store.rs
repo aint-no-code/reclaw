@@ -44,6 +44,31 @@ impl SqliteStore {
         Ok(())
     }
 
+    pub async fn transition_agent_run_status(
+        &self,
+        run_id: &str,
+        from_status: &str,
+        to_status: &str,
+        updated_at_ms: u64,
+    ) -> Result<bool, DomainError> {
+        let result = sqlx::query(
+            "UPDATE agent_runs \
+             SET status = ?, updated_at_ms = ? \
+             WHERE run_id = ? AND status = ?",
+        )
+        .bind(to_status)
+        .bind(i64::try_from(updated_at_ms).unwrap_or(i64::MAX))
+        .bind(run_id)
+        .bind(from_status)
+        .execute(self.pool())
+        .await
+        .map_err(|error| {
+            DomainError::Storage(format!("failed to transition agent run status: {error}"))
+        })?;
+
+        Ok(result.rows_affected() == 1)
+    }
+
     pub async fn get_agent_run(&self, run_id: &str) -> Result<Option<AgentRunRecord>, DomainError> {
         let row = sqlx::query_as::<_, AgentRow>(
             "SELECT run_id, agent_id, input, output, status, session_key, metadata_json, created_at_ms, updated_at_ms, completed_at_ms \

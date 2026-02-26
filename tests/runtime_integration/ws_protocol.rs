@@ -580,6 +580,117 @@ async fn deferred_agent_run_executes_via_wait() {
 }
 
 #[tokio::test]
+async fn concurrent_agent_wait_calls_do_not_duplicate_deferred_execution() {
+    let server = spawn_server(AuthMode::None).await;
+    let mut ws_primary = connect_gateway(server.addr).await;
+    let mut ws_secondary = connect_gateway(server.addr).await;
+
+    ws_primary
+        .send(Message::Text(
+            connect_frame(
+                None,
+                1,
+                PROTOCOL_VERSION,
+                "operator",
+                "reclaw-wait-primary",
+                &[],
+            )
+            .to_string()
+            .into(),
+        ))
+        .await
+        .expect("primary connect frame should send");
+    let _ = recv_json(&mut ws_primary).await;
+
+    ws_secondary
+        .send(Message::Text(
+            connect_frame(
+                None,
+                1,
+                PROTOCOL_VERSION,
+                "operator",
+                "reclaw-wait-secondary",
+                &[],
+            )
+            .to_string()
+            .into(),
+        ))
+        .await
+        .expect("secondary connect frame should send");
+    let _ = recv_json(&mut ws_secondary).await;
+
+    let queued = rpc_req(
+        &mut ws_primary,
+        "wait-race-1",
+        "agent",
+        Some(json!({
+            "runId": "run-wait-race-1",
+            "sessionKey": "agent:main:wait-race",
+            "agentId": "main",
+            "input": "race me",
+            "deferred": true
+        })),
+    )
+    .await;
+    assert_eq!(queued["ok"], true);
+    assert_eq!(queued["payload"]["summary"], "queued");
+
+    let wait_primary = async {
+        rpc_req(
+            &mut ws_primary,
+            "wait-race-2",
+            "agent.wait",
+            Some(json!({
+                "runId": "run-wait-race-1",
+                "timeoutMs": 2_000
+            })),
+        )
+        .await
+    };
+    let wait_secondary = async {
+        rpc_req(
+            &mut ws_secondary,
+            "wait-race-3",
+            "agent.wait",
+            Some(json!({
+                "runId": "run-wait-race-1",
+                "timeoutMs": 2_000
+            })),
+        )
+        .await
+    };
+    let (wait_primary, wait_secondary) = tokio::join!(wait_primary, wait_secondary);
+
+    for wait in [&wait_primary, &wait_secondary] {
+        assert_eq!(wait["ok"], true);
+        assert_eq!(wait["payload"]["status"], "completed");
+        assert_eq!(wait["payload"]["result"]["output"], "Echo: race me");
+    }
+
+    let history = rpc_req(
+        &mut ws_primary,
+        "wait-race-4",
+        "chat.history",
+        Some(json!({
+            "sessionKey": "agent:main:wait-race",
+            "limit": 10
+        })),
+    )
+    .await;
+    assert_eq!(history["ok"], true);
+    let messages = history["payload"]["messages"]
+        .as_array()
+        .expect("history messages should be an array");
+    assert_eq!(messages.len(), 2);
+    assert_eq!(messages[0]["role"], "user");
+    assert_eq!(messages[0]["text"], "race me");
+    assert_eq!(messages[1]["role"], "assistant");
+    assert_eq!(messages[1]["text"], "Echo: race me");
+
+    server.stop().await;
+}
+
+#[tokio::test]
 async fn chat_abort_cancels_deferred_agent_run() {
     let server = spawn_server(AuthMode::None).await;
     let mut ws = connect_gateway(server.addr).await;
