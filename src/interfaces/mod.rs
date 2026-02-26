@@ -8,6 +8,7 @@ pub mod openai;
 pub mod openresponses;
 pub mod signal;
 pub mod slack;
+pub mod slack_http;
 pub mod telegram;
 pub mod tools_invoke;
 pub mod webhooks;

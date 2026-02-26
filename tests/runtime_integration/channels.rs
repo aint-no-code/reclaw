@@ -609,6 +609,73 @@ async fn slack_webhook_requires_configured_token() {
     server.stop().await;
 }
 
+#[tokio::test]
+async fn slack_events_route_ingests_event_message() {
+    let server = spawn_server_with(AuthMode::None, |config| {
+        config.slack_webhook_token = Some("slack-token".to_owned());
+    })
+    .await;
+
+    let client = reqwest::Client::new();
+    let response = client
+        .post(format!("http://{}/slack/events", server.addr))
+        .bearer_auth("slack-token")
+        .json(&json!({
+            "type": "event_callback",
+            "event_id": "Ev-route-1",
+            "event": {
+                "type": "message",
+                "channel": "C-route",
+                "user": "U-route",
+                "text": "hello from slack route",
+                "ts": "515.111"
+            }
+        }))
+        .send()
+        .await
+        .expect("slack events request should return");
+
+    assert!(response.status().is_success());
+    let payload: Value = response.json().await.expect("response should be json");
+    assert_eq!(payload["ok"], true);
+    assert_eq!(payload["accepted"], true);
+
+    let session_key = payload["sessionKey"]
+        .as_str()
+        .expect("session key should exist")
+        .to_owned();
+    assert_session_has_history(server.addr, &session_key).await;
+
+    server.stop().await;
+}
+
+#[tokio::test]
+async fn slack_events_route_handles_url_verification() {
+    let server = spawn_server_with(AuthMode::None, |config| {
+        config.slack_webhook_token = Some("slack-token".to_owned());
+    })
+    .await;
+
+    let client = reqwest::Client::new();
+    let response = client
+        .post(format!("http://{}/slack/events", server.addr))
+        .bearer_auth("slack-token")
+        .json(&json!({
+            "type": "url_verification",
+            "challenge": "challenge-123"
+        }))
+        .send()
+        .await
+        .expect("slack events request should return");
+
+    assert!(response.status().is_success());
+    let payload: Value = response.json().await.expect("response should be json");
+    assert_eq!(payload["ok"], true);
+    assert_eq!(payload["challenge"], "challenge-123");
+
+    server.stop().await;
+}
+
 fn fake_webhook_dispatch<'a>(
     _state: &'a SharedState,
     _headers: &'a axum::http::HeaderMap,
