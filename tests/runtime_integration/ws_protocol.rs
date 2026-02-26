@@ -1114,6 +1114,144 @@ async fn chat_abort_without_run_id_cancels_all_session_runs() {
 }
 
 #[tokio::test]
+async fn chat_abort_rejects_run_session_mismatch() {
+    let server = spawn_server(AuthMode::None).await;
+    let mut ws = connect_gateway(server.addr).await;
+
+    ws.send(Message::Text(
+        connect_frame(
+            None,
+            1,
+            PROTOCOL_VERSION,
+            "operator",
+            "reclaw-abort-mismatch",
+            &[],
+        )
+        .to_string()
+        .into(),
+    ))
+    .await
+    .expect("connect frame should send");
+    let _ = recv_json(&mut ws).await;
+
+    let queued = rpc_req(
+        &mut ws,
+        "abort-mismatch-1",
+        "agent",
+        Some(json!({
+            "runId": "run-abort-mismatch-1",
+            "sessionKey": "agent:main:abort-source",
+            "agentId": "main",
+            "input": "mismatch test",
+            "deferred": true
+        })),
+    )
+    .await;
+    assert_eq!(queued["ok"], true);
+    assert_eq!(queued["payload"]["summary"], "queued");
+
+    let aborted = rpc_req(
+        &mut ws,
+        "abort-mismatch-2",
+        "chat.abort",
+        Some(json!({
+            "sessionKey": "agent:main:abort-target",
+            "runId": "run-abort-mismatch-1"
+        })),
+    )
+    .await;
+    assert_eq!(aborted["ok"], false);
+    assert_eq!(aborted["error"]["code"], "INVALID_REQUEST");
+
+    let wait = rpc_req(
+        &mut ws,
+        "abort-mismatch-3",
+        "agent.wait",
+        Some(json!({
+            "runId": "run-abort-mismatch-1",
+            "timeoutMs": 500
+        })),
+    )
+    .await;
+    assert_eq!(wait["ok"], true);
+    assert_eq!(wait["payload"]["status"], "completed");
+    assert_eq!(wait["payload"]["result"]["output"], "Echo: mismatch test");
+
+    server.stop().await;
+}
+
+#[tokio::test]
+async fn chat_abort_completed_run_is_noop() {
+    let server = spawn_server(AuthMode::None).await;
+    let mut ws = connect_gateway(server.addr).await;
+
+    ws.send(Message::Text(
+        connect_frame(
+            None,
+            1,
+            PROTOCOL_VERSION,
+            "operator",
+            "reclaw-abort-noop",
+            &[],
+        )
+        .to_string()
+        .into(),
+    ))
+    .await
+    .expect("connect frame should send");
+    let _ = recv_json(&mut ws).await;
+
+    let queued = rpc_req(
+        &mut ws,
+        "abort-noop-1",
+        "agent",
+        Some(json!({
+            "runId": "run-abort-noop-1",
+            "sessionKey": "agent:main:abort-noop",
+            "agentId": "main",
+            "input": "complete then abort",
+            "deferred": true
+        })),
+    )
+    .await;
+    assert_eq!(queued["ok"], true);
+    assert_eq!(queued["payload"]["summary"], "queued");
+
+    let wait = rpc_req(
+        &mut ws,
+        "abort-noop-2",
+        "agent.wait",
+        Some(json!({
+            "runId": "run-abort-noop-1",
+            "timeoutMs": 500
+        })),
+    )
+    .await;
+    assert_eq!(wait["ok"], true);
+    assert_eq!(wait["payload"]["status"], "completed");
+    assert_eq!(
+        wait["payload"]["result"]["output"],
+        "Echo: complete then abort"
+    );
+
+    let abort = rpc_req(
+        &mut ws,
+        "abort-noop-3",
+        "chat.abort",
+        Some(json!({
+            "sessionKey": "agent:main:abort-noop",
+            "runId": "run-abort-noop-1"
+        })),
+    )
+    .await;
+    assert_eq!(abort["ok"], true);
+    assert_eq!(abort["payload"]["aborted"], false);
+    assert_eq!(abort["payload"]["runIds"][0], "run-abort-noop-1");
+
+    server.stop().await;
+}
+
+#[tokio::test]
 async fn extended_method_groups_round_trip() {
     let server = spawn_server_with(AuthMode::None, |config| {
         config.channel_webhook_plugins.insert(
