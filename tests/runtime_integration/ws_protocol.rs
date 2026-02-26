@@ -1252,6 +1252,58 @@ async fn chat_abort_completed_run_is_noop() {
 }
 
 #[tokio::test]
+async fn chat_abort_unknown_run_is_noop() {
+    let server = spawn_server(AuthMode::None).await;
+    let mut ws = connect_gateway(server.addr).await;
+
+    ws.send(Message::Text(
+        connect_frame(
+            None,
+            1,
+            PROTOCOL_VERSION,
+            "operator",
+            "reclaw-abort-missing",
+            &[],
+        )
+        .to_string()
+        .into(),
+    ))
+    .await
+    .expect("connect frame should send");
+    let _ = recv_json(&mut ws).await;
+
+    let abort = rpc_req(
+        &mut ws,
+        "abort-missing-1",
+        "chat.abort",
+        Some(json!({
+            "sessionKey": "agent:main:abort-missing",
+            "runId": "run-abort-missing-1"
+        })),
+    )
+    .await;
+    assert_eq!(abort["ok"], true);
+    assert_eq!(abort["payload"]["aborted"], false);
+    assert_eq!(abort["payload"]["runIds"][0], "run-abort-missing-1");
+
+    let wait = rpc_req(
+        &mut ws,
+        "abort-missing-2",
+        "agent.wait",
+        Some(json!({
+            "runId": "run-abort-missing-1",
+            "timeoutMs": 10
+        })),
+    )
+    .await;
+    assert_eq!(wait["ok"], true);
+    assert_eq!(wait["payload"]["status"], "timeout");
+    assert_eq!(wait["payload"]["runId"], "run-abort-missing-1");
+
+    server.stop().await;
+}
+
+#[tokio::test]
 async fn extended_method_groups_round_trip() {
     let server = spawn_server_with(AuthMode::None, |config| {
         config.channel_webhook_plugins.insert(
