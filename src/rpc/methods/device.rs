@@ -173,8 +173,8 @@ pub async fn handle_pair_approve(
     {
         let now = now_unix_ms();
         let paired = PairedDevice {
-            device_id: node_request.node_id.clone(),
-            display_name: Some(node_request.display_name.clone()),
+            device_id: node_request.node_id,
+            display_name: Some(node_request.display_name),
             role: Some("node".to_owned()),
             scopes: Vec::new(),
             approved_scopes: Vec::new(),

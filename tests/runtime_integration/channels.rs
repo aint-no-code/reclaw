@@ -70,7 +70,6 @@ async fn spawn_outbound_capture(
     let app = Router::new().route(
         route_path,
         post({
-            let body_tx = body_tx.clone();
             move |headers: axum::http::HeaderMap, Json(body): Json<Value>| {
                 let body_tx = body_tx.clone();
                 async move {
@@ -120,7 +119,6 @@ async fn spawn_plugin_proxy_capture(
     let app = Router::new().route(
         route_path,
         post({
-            let body_tx = body_tx.clone();
             move |headers: axum::http::HeaderMap, Json(body): Json<Value>| {
                 let body_tx = body_tx.clone();
                 async move {

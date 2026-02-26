@@ -8,6 +8,9 @@ repository = "https://github.com/themondays/reclaw"
 
 [lints.clippy]
 all = { level = "warn", priority = -1 }
+redundant_clone = "warn"
+clone_on_copy = "warn"
+cloned_instead_of_copied = "warn"
 
 [lints.rust]
 rust_2018_idioms = "warn"

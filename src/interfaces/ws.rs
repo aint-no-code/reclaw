@@ -34,7 +34,7 @@ pub async fn ws_handler(
 async fn handle_socket(mut socket: WebSocket, state: SharedState, remote_addr: SocketAddr) {
     let remote_ip = Some(remote_addr.ip().to_string());
 
-    let session = match perform_handshake(&mut socket, &state, remote_ip.clone()).await {
+    let session = match perform_handshake(&mut socket, &state, remote_ip).await {
         Ok(context) => context,
         Err(()) => {
             debug!("handshake failed remote={remote_addr}");
@@ -344,7 +344,7 @@ fn parse_connect_params(params: Option<Value>) -> Result<ConnectParams, ErrorSha
 }
 
 fn auth_key(remote_ip: &Option<String>, client_id: &str) -> String {
-    let ip = remote_ip.clone().unwrap_or_else(|| "unknown".to_owned());
+    let ip = remote_ip.as_deref().unwrap_or("unknown");
     format!("{ip}:{client_id}")
 }
 
