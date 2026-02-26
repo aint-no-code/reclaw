@@ -190,15 +190,28 @@ pub async fn handle_abort(
         .and_then(trim_non_empty)
         .unwrap_or_else(|| "agent:main:main".to_owned());
     let Some(run_id) = parsed.run_id.and_then(trim_non_empty) else {
+        let runs = state
+            .list_agent_runs_by_session(&session_key, Some(500))
+            .await
+            .map_err(map_domain_error)?;
+        let mut aborted_run_ids = Vec::new();
+        for run in runs {
+            if is_terminal_run_status(run.status.as_str()) {
+                continue;
+            }
+            let aborted_run_id = run.id.clone();
+            abort_run(state, run).await?;
+            aborted_run_ids.push(aborted_run_id);
+        }
         return Ok(json!({
             "ok": true,
-            "aborted": false,
+            "aborted": !aborted_run_ids.is_empty(),
             "sessionKey": session_key,
-            "runIds": Vec::<String>::new(),
+            "runIds": aborted_run_ids,
         }));
     };
 
-    let Some(mut run) = state
+    let Some(run) = state
         .get_agent_run(&run_id)
         .await
         .map_err(map_domain_error)?
@@ -222,9 +235,7 @@ pub async fn handle_abort(
         ));
     }
 
-    let already_terminal =
-        run.status == "completed" || run.status == "error" || run.status == "aborted";
-    if already_terminal {
+    if is_terminal_run_status(run.status.as_str()) {
         return Ok(json!({
             "ok": true,
             "aborted": false,
@@ -233,6 +244,24 @@ pub async fn handle_abort(
         }));
     }
 
+    abort_run(state, run).await?;
+
+    Ok(json!({
+        "ok": true,
+        "aborted": true,
+        "sessionKey": session_key,
+        "runIds": vec![run_id],
+    }))
+}
+
+fn is_terminal_run_status(status: &str) -> bool {
+    status == "completed" || status == "error" || status == "aborted"
+}
+
+async fn abort_run(
+    state: &SharedState,
+    mut run: AgentRunRecord,
+) -> Result<(), crate::protocol::ErrorShape> {
     let aborted_at = now_unix_ms();
     run.status = "aborted".to_owned();
     run.updated_at_ms = aborted_at;
@@ -244,17 +273,7 @@ pub async fn handle_abort(
         metadata.insert("abortedBy".to_owned(), Value::from("chat.abort"));
         metadata.insert("abortedAtMs".to_owned(), Value::from(aborted_at));
     }
-    state
-        .upsert_agent_run(&run)
-        .await
-        .map_err(map_domain_error)?;
-
-    Ok(json!({
-        "ok": true,
-        "aborted": true,
-        "sessionKey": session_key,
-        "runIds": vec![run_id],
-    }))
+    state.upsert_agent_run(&run).await.map_err(map_domain_error)
 }
 
 fn resolve_session_key(

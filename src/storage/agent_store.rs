@@ -67,6 +67,27 @@ impl SqliteStore {
 
         Ok(u64::try_from(count).unwrap_or(0))
     }
+
+    pub async fn list_agent_runs_by_session(
+        &self,
+        session_key: &str,
+        limit: Option<usize>,
+    ) -> Result<Vec<AgentRunRecord>, DomainError> {
+        let limit = limit.unwrap_or(500).clamp(1, 5_000);
+        let rows = sqlx::query_as::<_, AgentRow>(
+            "SELECT run_id, agent_id, input, output, status, session_key, metadata_json, created_at_ms, updated_at_ms, completed_at_ms \
+             FROM agent_runs WHERE session_key = ? ORDER BY updated_at_ms DESC LIMIT ?",
+        )
+        .bind(session_key)
+        .bind(i64::try_from(limit).unwrap_or(5_000))
+        .fetch_all(self.pool())
+        .await
+        .map_err(|error| {
+            DomainError::Storage(format!("failed to list agent runs by session: {error}"))
+        })?;
+
+        rows.into_iter().map(map_agent_row).collect()
+    }
 }
 
 fn map_agent_row(row: AgentRow) -> Result<AgentRunRecord, DomainError> {

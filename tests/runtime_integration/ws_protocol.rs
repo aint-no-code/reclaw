@@ -626,6 +626,92 @@ async fn chat_abort_cancels_deferred_agent_run() {
 }
 
 #[tokio::test]
+async fn chat_abort_without_run_id_cancels_all_session_runs() {
+    let server = spawn_server(AuthMode::None).await;
+    let mut ws = connect_gateway(server.addr).await;
+
+    ws.send(Message::Text(
+        connect_frame(
+            None,
+            1,
+            PROTOCOL_VERSION,
+            "operator",
+            "reclaw-abort-all",
+            &[],
+        )
+        .to_string()
+        .into(),
+    ))
+    .await
+    .expect("connect frame should send");
+    let _ = recv_json(&mut ws).await;
+
+    for run_id in ["run-abort-all-1", "run-abort-all-2"] {
+        let queued = rpc_req(
+            &mut ws,
+            &format!("abort-all-{run_id}"),
+            "agent",
+            Some(json!({
+                "runId": run_id,
+                "sessionKey": "agent:main:abort-all",
+                "agentId": "main",
+                "input": "to be aborted",
+                "deferred": true
+            })),
+        )
+        .await;
+        assert_eq!(queued["ok"], true);
+        assert_eq!(queued["payload"]["summary"], "queued");
+    }
+
+    let aborted = rpc_req(
+        &mut ws,
+        "abort-all-3",
+        "chat.abort",
+        Some(json!({
+            "sessionKey": "agent:main:abort-all"
+        })),
+    )
+    .await;
+    assert_eq!(aborted["ok"], true);
+    assert_eq!(aborted["payload"]["aborted"], true);
+    let run_ids = aborted["payload"]["runIds"]
+        .as_array()
+        .expect("runIds should be an array");
+    assert_eq!(run_ids.len(), 2);
+    assert!(
+        run_ids
+            .iter()
+            .any(|value| value.as_str() == Some("run-abort-all-1"))
+    );
+    assert!(
+        run_ids
+            .iter()
+            .any(|value| value.as_str() == Some("run-abort-all-2"))
+    );
+
+    for (request_id, run_id) in [
+        ("abort-all-4", "run-abort-all-1"),
+        ("abort-all-5", "run-abort-all-2"),
+    ] {
+        let wait = rpc_req(
+            &mut ws,
+            request_id,
+            "agent.wait",
+            Some(json!({
+                "runId": run_id,
+                "timeoutMs": 500
+            })),
+        )
+        .await;
+        assert_eq!(wait["ok"], true);
+        assert_eq!(wait["payload"]["status"], "aborted");
+    }
+
+    server.stop().await;
+}
+
+#[tokio::test]
 async fn extended_method_groups_round_trip() {
     let server = spawn_server_with(AuthMode::None, |config| {
         config.channel_webhook_plugins.insert(

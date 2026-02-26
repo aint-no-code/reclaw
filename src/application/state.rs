@@ -355,6 +355,17 @@ impl SharedState {
         self.inner.store.count_agent_runs().await
     }
 
+    pub async fn list_agent_runs_by_session(
+        &self,
+        session_key: &str,
+        limit: Option<usize>,
+    ) -> Result<Vec<AgentRunRecord>, DomainError> {
+        self.inner
+            .store
+            .list_agent_runs_by_session(session_key, limit)
+            .await
+    }
+
     pub async fn list_cron_jobs(&self) -> Result<Vec<CronJobRecord>, DomainError> {
         self.inner.store.list_cron_jobs().await
     }

@@ -36,6 +36,7 @@ Scope compared: `openclaw/src/gateway/**` and `openclaw/src/channels/plugins/**`
   - run/idempotency reuse is now guarded for `chat.send` and `agent` to avoid duplicate side effects.
   - `agent` supports queued deferred runs executed through `agent.wait` (lifecycle scaffolding).
   - `chat.abort` cancels queued/running deferred runs within the same session.
+  - `chat.abort` supports session-wide cancellation when `runId` is omitted.
 
 2. Plugin/channel runtime parity (dynamic channel plugin system).
 - OpenClaw references:

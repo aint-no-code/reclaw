@@ -15,6 +15,7 @@
 
 - `agent` accepts optional `deferred=true` to create a queued run that executes when `agent.wait` is called.
 - `chat.abort` cancels queued/running agent runs for the same `sessionKey`.
+- `chat.abort` without `runId` cancels all non-terminal runs for the provided `sessionKey`.
 
 ## Error Rules
 
