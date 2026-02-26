@@ -28,6 +28,7 @@ pub fn build_router_with_webhooks(
     state: SharedState,
     webhook_registry: webhooks::ChannelWebhookRegistry,
 ) -> Router {
+    let slack_events_path = state.config().slack_events_path.clone();
     let mut router = Router::new()
         .route("/", get(ws::ws_handler))
         .route("/ws", get(ws::ws_handler))
@@ -35,7 +36,6 @@ pub fn build_router_with_webhooks(
         .route("/readyz", get(readyz_handler))
         .route("/info", get(info_handler))
         .route("/tools/invoke", post(tools_invoke::invoke_handler))
-        .route("/slack/events", post(slack_http::events_handler))
         .route("/channels/inbound", post(channels::inbound_handler))
         .route(
             "/channels/{channel}/inbound",
@@ -48,8 +48,9 @@ pub fn build_router_with_webhooks(
         .route(
             "/channels/{channel}/webhook",
             post(webhooks::channel_webhook_handler),
-        )
-        .layer(Extension(webhook_registry));
+        );
+    router = router.route(slack_events_path.as_str(), post(slack_http::events_handler));
+    router = router.layer(Extension(webhook_registry));
 
     if state.config().hooks_enabled {
         let hooks_base_path = state.config().hooks_path.clone();

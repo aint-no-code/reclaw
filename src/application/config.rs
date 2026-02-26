@@ -22,6 +22,7 @@ const DEFAULT_AUTH_WINDOW_MS: u64 = 60_000;
 const DEFAULT_LOG_FILTER: &str = "info";
 const DEFAULT_JSON_LOGS: bool = false;
 const DEFAULT_HOOKS_PATH: &str = "/hooks";
+const DEFAULT_SLACK_EVENTS_PATH: &str = "/slack/events";
 const DEFAULT_HOOKS_MAX_BODY_BYTES: usize = 256 * 1024;
 const DEFAULT_CHANNEL_WEBHOOK_PLUGIN_TIMEOUT_MS: u64 = 10_000;
 const MAX_CHANNEL_WEBHOOK_PLUGIN_TIMEOUT_MS: u64 = 120_000;
@@ -74,6 +75,9 @@ pub struct Args {
 
     #[arg(long, env = "RECLAW_SLACK_WEBHOOK_TOKEN")]
     pub slack_webhook_token: Option<String>,
+
+    #[arg(long, env = "RECLAW_SLACK_EVENTS_PATH")]
+    pub slack_events_path: Option<String>,
 
     #[arg(long, env = "RECLAW_SLACK_OUTBOUND_URL")]
     pub slack_outbound_url: Option<String>,
@@ -296,6 +300,7 @@ pub struct RuntimeConfig {
     pub discord_outbound_url: Option<String>,
     pub discord_outbound_token: Option<String>,
     pub slack_webhook_token: Option<String>,
+    pub slack_events_path: String,
     pub slack_outbound_url: Option<String>,
     pub slack_outbound_token: Option<String>,
     pub signal_webhook_token: Option<String>,
@@ -435,6 +440,11 @@ impl RuntimeConfig {
             args.slack_webhook_token
                 .or(static_config.slack_webhook_token),
         );
+        let slack_events_path = normalize_slack_events_path(
+            args.slack_events_path
+                .or(static_config.slack_events_path)
+                .unwrap_or_else(|| DEFAULT_SLACK_EVENTS_PATH.to_owned()),
+        )?;
         let slack_outbound_url =
             normalize_non_empty(args.slack_outbound_url.or(static_config.slack_outbound_url));
         let slack_outbound_token = normalize_non_empty(
@@ -558,6 +568,7 @@ impl RuntimeConfig {
             discord_outbound_url,
             discord_outbound_token,
             slack_webhook_token,
+            slack_events_path,
             slack_outbound_url,
             slack_outbound_token,
             signal_webhook_token,
@@ -613,6 +624,7 @@ impl RuntimeConfig {
             discord_outbound_url: None,
             discord_outbound_token: None,
             slack_webhook_token: None,
+            slack_events_path: DEFAULT_SLACK_EVENTS_PATH.to_owned(),
             slack_outbound_url: None,
             slack_outbound_token: None,
             signal_webhook_token: None,
@@ -665,6 +677,7 @@ struct StaticConfigValues {
     discord_outbound_url: Option<String>,
     discord_outbound_token: Option<String>,
     slack_webhook_token: Option<String>,
+    slack_events_path: Option<String>,
     slack_outbound_url: Option<String>,
     slack_outbound_token: Option<String>,
     signal_webhook_token: Option<String>,
@@ -723,6 +736,7 @@ impl StaticConfigValues {
             other.discord_outbound_token,
         );
         override_option(&mut self.slack_webhook_token, other.slack_webhook_token);
+        override_option(&mut self.slack_events_path, other.slack_events_path);
         override_option(&mut self.slack_outbound_url, other.slack_outbound_url);
         override_option(&mut self.slack_outbound_token, other.slack_outbound_token);
         override_option(&mut self.signal_webhook_token, other.signal_webhook_token);
@@ -948,6 +962,23 @@ fn normalize_channel_plugin_key(input: &str) -> Option<String> {
     }
 }
 
+fn normalize_slack_events_path(input: String) -> Result<String, String> {
+    let mut path = input.trim().to_owned();
+    if path.is_empty() {
+        return Ok(DEFAULT_SLACK_EVENTS_PATH.to_owned());
+    }
+    if !path.starts_with('/') {
+        path.insert(0, '/');
+    }
+    while path.len() > 1 && path.ends_with('/') {
+        path.pop();
+    }
+    if path == "/" {
+        return Err("slackEventsPath may not be '/'".to_owned());
+    }
+    Ok(path)
+}
+
 fn normalize_hooks_path(input: String) -> Result<String, String> {
     let mut path = input.trim().to_owned();
     if path.is_empty() {
@@ -1028,6 +1059,7 @@ mod tests {
             discord_outbound_url: None,
             discord_outbound_token: None,
             slack_webhook_token: None,
+            slack_events_path: None,
             slack_outbound_url: None,
             slack_outbound_token: None,
             signal_webhook_token: None,
@@ -1207,6 +1239,27 @@ mod tests {
             runtime.whatsapp_outbound_url.as_deref(),
             Some("https://relay.example/whatsapp")
         );
+    }
+
+    #[test]
+    fn runtime_config_supports_slack_events_path() {
+        let temp_dir = tempfile::tempdir().expect("temp dir should be created");
+        let config_path = temp_dir.path().join("config.toml");
+        fs::write(&config_path, "slackEventsPath = \"hooks/slack-events/\"\n")
+            .expect("config should write");
+
+        let mut args = empty_args();
+        args.config = Some(config_path.clone());
+
+        let runtime = RuntimeConfig::from_args(args).expect("runtime config should build");
+        assert_eq!(runtime.slack_events_path, "/hooks/slack-events");
+
+        let mut override_args = empty_args();
+        override_args.config = Some(config_path);
+        override_args.slack_events_path = Some("slack/override/".to_owned());
+        let overridden =
+            RuntimeConfig::from_args(override_args).expect("runtime config should build");
+        assert_eq!(overridden.slack_events_path, "/slack/override");
     }
 
     #[test]

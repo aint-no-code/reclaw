@@ -129,7 +129,7 @@ Text updates are ingested into session keys shaped like:
 Built-in webhook adapters are now available for:
 
 - `discord` at `POST /channels/discord/webhook`
-- `slack` at `POST /channels/slack/webhook`
+- `slack` at `POST /channels/slack/webhook` and `POST /slack/events` (or configured `slackEventsPath`)
 - `signal` at `POST /channels/signal/webhook`
 - `whatsapp` at `POST /channels/whatsapp/webhook`
 
@@ -137,6 +137,7 @@ Each of these adapters requires a bearer token in `Authorization`:
 
 - `discordWebhookToken` / `RECLAW_DISCORD_WEBHOOK_TOKEN`
 - `slackWebhookToken` / `RECLAW_SLACK_WEBHOOK_TOKEN`
+- `slackEventsPath` / `RECLAW_SLACK_EVENTS_PATH` (default `/slack/events`)
 - `signalWebhookToken` / `RECLAW_SIGNAL_WEBHOOK_TOKEN`
 - `whatsappWebhookToken` / `RECLAW_WHATSAPP_WEBHOOK_TOKEN`
 

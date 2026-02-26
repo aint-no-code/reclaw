@@ -676,6 +676,58 @@ async fn slack_events_route_handles_url_verification() {
     server.stop().await;
 }
 
+#[tokio::test]
+async fn slack_events_route_supports_custom_configured_path() {
+    let server = spawn_server_with(AuthMode::None, |config| {
+        config.slack_webhook_token = Some("slack-token".to_owned());
+        config.slack_events_path = "/hooks/slack-events".to_owned();
+    })
+    .await;
+
+    let client = reqwest::Client::new();
+    let custom = client
+        .post(format!("http://{}/hooks/slack-events", server.addr))
+        .bearer_auth("slack-token")
+        .json(&json!({
+            "type": "event_callback",
+            "event_id": "Ev-custom-1",
+            "event": {
+                "type": "message",
+                "channel": "C-custom",
+                "user": "U-custom",
+                "text": "hello from custom slack route",
+                "ts": "717.001"
+            }
+        }))
+        .send()
+        .await
+        .expect("custom slack events request should return");
+
+    assert!(custom.status().is_success());
+    let payload: Value = custom.json().await.expect("response should be json");
+    assert_eq!(payload["ok"], true);
+    assert_eq!(payload["accepted"], true);
+
+    let default = client
+        .post(format!("http://{}/slack/events", server.addr))
+        .bearer_auth("slack-token")
+        .json(&json!({
+            "type": "event_callback",
+            "event_id": "Ev-custom-default",
+            "event": {
+                "type": "message",
+                "channel": "C-custom",
+                "text": "should not route"
+            }
+        }))
+        .send()
+        .await
+        .expect("default slack events request should return");
+    assert_eq!(default.status(), reqwest::StatusCode::NOT_FOUND);
+
+    server.stop().await;
+}
+
 fn fake_webhook_dispatch<'a>(
     _state: &'a SharedState,
     _headers: &'a axum::http::HeaderMap,
