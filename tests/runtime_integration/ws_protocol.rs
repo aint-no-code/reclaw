@@ -499,6 +499,22 @@ async fn deferred_agent_run_executes_via_wait() {
     assert_eq!(queued["payload"]["summary"], "queued");
     assert!(queued["payload"]["result"]["output"].is_null());
 
+    let sessions = rpc_req(
+        &mut ws,
+        "defer-sessions-1",
+        "sessions.list",
+        Some(json!({})),
+    )
+    .await;
+    assert_eq!(sessions["ok"], true);
+    assert!(
+        sessions["payload"]["sessions"]
+            .as_array()
+            .is_some_and(|items| items
+                .iter()
+                .any(|entry| entry["id"] == "agent:main:deferred"))
+    );
+
     let wait = rpc_req(
         &mut ws,
         "defer-2",

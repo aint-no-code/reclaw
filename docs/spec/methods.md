@@ -14,6 +14,7 @@
 ## Runtime Notes
 
 - `agent` accepts optional `deferred=true` to create a queued run that executes when `agent.wait` is called.
+- `agent` ensures `sessionKey` exists in session storage before run execution.
 - `chat.abort` cancels queued/running agent runs for the same `sessionKey`.
 - `chat.abort` without `runId` cancels all non-terminal runs for the provided `sessionKey`.
 

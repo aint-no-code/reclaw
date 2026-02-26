@@ -6,7 +6,7 @@ use tokio::time::{Instant, sleep};
 
 use crate::{
     application::state::SharedState,
-    domain::models::{AgentRunRecord, ChatMessage},
+    domain::models::{AgentRunRecord, ChatMessage, SessionRecord},
     rpc::{
         SessionContext,
         dispatcher::map_domain_error,
@@ -101,6 +101,8 @@ pub async fn handle_agent(
     {
         return resolve_existing_agent_run(existing, &session_key, &agent_id);
     }
+
+    ensure_session_exists(state, &session_key).await?;
 
     let now = now_unix_ms();
     let mut run = AgentRunRecord {
@@ -408,4 +410,33 @@ fn trim_non_empty(value: String) -> Option<String> {
     } else {
         Some(trimmed.to_owned())
     }
+}
+
+async fn ensure_session_exists(
+    state: &SharedState,
+    session_key: &str,
+) -> Result<(), crate::protocol::ErrorShape> {
+    if state
+        .get_session(session_key)
+        .await
+        .map_err(map_domain_error)?
+        .is_some()
+    {
+        return Ok(());
+    }
+
+    let now = now_unix_ms();
+    let session = SessionRecord {
+        id: session_key.to_owned(),
+        title: format!("Session {session_key}"),
+        tags: Vec::new(),
+        metadata: json!({}),
+        created_at_ms: now,
+        updated_at_ms: now,
+    };
+
+    state
+        .upsert_session(&session)
+        .await
+        .map_err(map_domain_error)
 }
