@@ -360,6 +360,17 @@ impl SharedState {
             .await
     }
 
+    pub async fn finalize_agent_run_if_status(
+        &self,
+        run: &AgentRunRecord,
+        expected_status: &str,
+    ) -> Result<bool, DomainError> {
+        self.inner
+            .store
+            .finalize_agent_run_if_status(run, expected_status)
+            .await
+    }
+
     pub async fn get_agent_run(&self, run_id: &str) -> Result<Option<AgentRunRecord>, DomainError> {
         self.inner.store.get_agent_run(run_id).await
     }

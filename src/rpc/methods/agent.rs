@@ -235,10 +235,18 @@ async fn execute_agent_run(
         run.output = format!("agent execution failed while appending chat messages: {error}");
         run.updated_at_ms = failed_at;
         run.completed_at_ms = Some(failed_at);
-        state
-            .upsert_agent_run(&run)
+        let finalized = state
+            .finalize_agent_run_if_status(&run, RUN_STATUS_RUNNING)
             .await
             .map_err(map_domain_error)?;
+        if !finalized
+            && let Some(latest) = state
+                .get_agent_run(&run.id)
+                .await
+                .map_err(map_domain_error)?
+        {
+            return Ok(latest);
+        }
         return Err(map_domain_error(error));
     }
 
@@ -251,6 +259,20 @@ async fn execute_agent_run(
     run.output = output;
     run.updated_at_ms = completed_at;
     run.completed_at_ms = Some(completed_at);
+    let finalized = state
+        .finalize_agent_run_if_status(&run, RUN_STATUS_RUNNING)
+        .await
+        .map_err(map_domain_error)?;
+    if finalized {
+        return Ok(run);
+    }
+    if let Some(latest) = state
+        .get_agent_run(&run.id)
+        .await
+        .map_err(map_domain_error)?
+    {
+        return Ok(latest);
+    }
     state
         .upsert_agent_run(&run)
         .await
