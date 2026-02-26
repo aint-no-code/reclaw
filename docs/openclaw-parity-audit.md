@@ -65,7 +65,8 @@ Scope compared: `openclaw/src/gateway/**` and `openclaw/src/channels/plugins/**`
   - `src/gateway/tools-invoke-http.ts`
   - `src/slack/http/**`
 - Current Rust status:
-  - Not implemented.
+  - `POST /tools/invoke` is implemented for authenticated `gateway.request` dispatch to RPC methods.
+  - Additional tool types and Slack HTTP surface parity are not yet implemented.
 
 3. Advanced gateway auth model parity for HTTP/WS.
 - OpenClaw references:

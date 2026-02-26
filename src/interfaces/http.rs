@@ -14,7 +14,7 @@ use tracing::info;
 use crate::{
     application::state::SharedState,
     domain::error::DomainError,
-    interfaces::{channels, hooks, openai, openresponses, telegram, webhooks, ws},
+    interfaces::{channels, hooks, openai, openresponses, telegram, tools_invoke, webhooks, ws},
     rpc::methods::{health, status},
 };
 
@@ -32,6 +32,7 @@ pub fn build_router_with_webhooks(
         .route("/healthz", get(healthz_handler))
         .route("/readyz", get(readyz_handler))
         .route("/info", get(info_handler))
+        .route("/tools/invoke", post(tools_invoke::invoke_handler))
         .route("/channels/inbound", post(channels::inbound_handler))
         .route(
             "/channels/{channel}/inbound",

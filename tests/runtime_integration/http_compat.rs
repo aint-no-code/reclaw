@@ -245,3 +245,81 @@ async fn openresponses_streams_sse_events() {
 
     server.stop().await;
 }
+
+#[tokio::test]
+async fn tools_invoke_requires_gateway_auth() {
+    let server = spawn_server_with(AuthMode::Token("gateway-secret".to_owned()), |_| {}).await;
+
+    let client = reqwest::Client::new();
+    let response = client
+        .post(format!("http://{}/tools/invoke", server.addr))
+        .json(&json!({
+            "tool": "gateway.request",
+            "args": {
+                "method": "health"
+            }
+        }))
+        .send()
+        .await
+        .expect("tools.invoke request should return");
+
+    assert_eq!(response.status(), reqwest::StatusCode::UNAUTHORIZED);
+    let payload: Value = response.json().await.expect("response should be json");
+    assert_eq!(payload["ok"], false);
+    assert_eq!(payload["error"]["type"], "authentication_error");
+
+    server.stop().await;
+}
+
+#[tokio::test]
+async fn tools_invoke_gateway_request_returns_rpc_payload() {
+    let server = spawn_server_with(AuthMode::Token("gateway-secret".to_owned()), |_| {}).await;
+
+    let client = reqwest::Client::new();
+    let response = client
+        .post(format!("http://{}/tools/invoke", server.addr))
+        .bearer_auth("gateway-secret")
+        .json(&json!({
+            "tool": "gateway.request",
+            "sessionKey": "agent:main:http-tools",
+            "args": {
+                "method": "health",
+                "params": {}
+            }
+        }))
+        .send()
+        .await
+        .expect("tools.invoke request should return");
+
+    assert!(response.status().is_success());
+    let payload: Value = response.json().await.expect("response should be json");
+    assert_eq!(payload["ok"], true);
+    assert_eq!(payload["result"]["ok"], true);
+    assert_eq!(payload["result"]["runtime"], "rust");
+
+    server.stop().await;
+}
+
+#[tokio::test]
+async fn tools_invoke_rejects_unknown_tool_name() {
+    let server = spawn_server_with(AuthMode::Token("gateway-secret".to_owned()), |_| {}).await;
+
+    let client = reqwest::Client::new();
+    let response = client
+        .post(format!("http://{}/tools/invoke", server.addr))
+        .bearer_auth("gateway-secret")
+        .json(&json!({
+            "tool": "unknown.tool",
+            "args": {}
+        }))
+        .send()
+        .await
+        .expect("tools.invoke request should return");
+
+    assert_eq!(response.status(), reqwest::StatusCode::NOT_FOUND);
+    let payload: Value = response.json().await.expect("response should be json");
+    assert_eq!(payload["ok"], false);
+    assert_eq!(payload["error"]["type"], "not_found");
+
+    server.stop().await;
+}

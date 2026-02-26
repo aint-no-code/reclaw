@@ -9,6 +9,7 @@ pub mod openresponses;
 pub mod signal;
 pub mod slack;
 pub mod telegram;
+pub mod tools_invoke;
 pub mod webhooks;
 pub mod whatsapp;
 pub(crate) mod ws;
