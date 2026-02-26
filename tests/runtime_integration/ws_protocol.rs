@@ -869,6 +869,78 @@ async fn chat_abort_cancels_deferred_agent_run() {
 }
 
 #[tokio::test]
+async fn chat_abort_cancels_deferred_chat_send_run() {
+    let server = spawn_server(AuthMode::None).await;
+    let mut ws = connect_gateway(server.addr).await;
+
+    ws.send(Message::Text(
+        connect_frame(
+            None,
+            1,
+            PROTOCOL_VERSION,
+            "operator",
+            "reclaw-chat-abort",
+            &[],
+        )
+        .to_string()
+        .into(),
+    ))
+    .await
+    .expect("connect frame should send");
+    let _ = recv_json(&mut ws).await;
+
+    let queued = rpc_req(
+        &mut ws,
+        "chat-abort-1",
+        "chat.send",
+        Some(json!({
+            "sessionKey": "agent:main:chat-abort",
+            "message": "deferred chat to abort",
+            "idempotencyKey": "run-chat-abort-1",
+            "deferred": true
+        })),
+    )
+    .await;
+    assert_eq!(queued["ok"], true);
+    assert_eq!(queued["payload"]["status"], "queued");
+    assert!(queued["payload"]["message"].is_null());
+
+    let aborted = rpc_req(
+        &mut ws,
+        "chat-abort-2",
+        "chat.abort",
+        Some(json!({
+            "sessionKey": "agent:main:chat-abort",
+            "runId": "run-chat-abort-1"
+        })),
+    )
+    .await;
+    assert_eq!(aborted["ok"], true);
+    assert_eq!(aborted["payload"]["aborted"], true);
+    assert_eq!(aborted["payload"]["runIds"][0], "run-chat-abort-1");
+
+    let wait = rpc_req(
+        &mut ws,
+        "chat-abort-3",
+        "agent.wait",
+        Some(json!({
+            "runId": "run-chat-abort-1",
+            "timeoutMs": 500
+        })),
+    )
+    .await;
+    assert_eq!(wait["ok"], true);
+    assert_eq!(wait["payload"]["status"], "aborted");
+    assert!(wait["payload"]["result"]["output"].is_null());
+    assert_eq!(
+        wait["payload"]["result"]["sessionKey"],
+        "agent:main:chat-abort"
+    );
+
+    server.stop().await;
+}
+
+#[tokio::test]
 async fn chat_abort_without_run_id_cancels_all_session_runs() {
     let server = spawn_server(AuthMode::None).await;
     let mut ws = connect_gateway(server.addr).await;
