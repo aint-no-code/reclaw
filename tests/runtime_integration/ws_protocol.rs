@@ -580,6 +580,122 @@ async fn deferred_agent_run_executes_via_wait() {
 }
 
 #[tokio::test]
+async fn deferred_chat_send_executes_via_agent_wait() {
+    let server = spawn_server(AuthMode::None).await;
+    let mut ws = connect_gateway(server.addr).await;
+
+    ws.send(Message::Text(
+        connect_frame(
+            None,
+            1,
+            PROTOCOL_VERSION,
+            "operator",
+            "reclaw-chat-deferred",
+            &[],
+        )
+        .to_string()
+        .into(),
+    ))
+    .await
+    .expect("connect frame should send");
+    let _ = recv_json(&mut ws).await;
+
+    let queued = rpc_req(
+        &mut ws,
+        "chat-defer-1",
+        "chat.send",
+        Some(json!({
+            "sessionKey": "agent:main:chat-deferred",
+            "message": "deferred chat hello",
+            "idempotencyKey": "run-chat-deferred-1",
+            "deferred": true
+        })),
+    )
+    .await;
+    assert_eq!(queued["ok"], true);
+    assert_eq!(queued["payload"]["status"], "queued");
+    assert!(queued["payload"]["message"].is_null());
+
+    let history_before = rpc_req(
+        &mut ws,
+        "chat-defer-2",
+        "chat.history",
+        Some(json!({
+            "sessionKey": "agent:main:chat-deferred",
+            "limit": 10
+        })),
+    )
+    .await;
+    assert_eq!(history_before["ok"], true);
+    assert!(
+        history_before["payload"]["messages"]
+            .as_array()
+            .is_some_and(|messages| messages.is_empty())
+    );
+
+    let wait = rpc_req(
+        &mut ws,
+        "chat-defer-3",
+        "agent.wait",
+        Some(json!({
+            "runId": "run-chat-deferred-1",
+            "timeoutMs": 2_000
+        })),
+    )
+    .await;
+    assert_eq!(wait["ok"], true);
+    assert_eq!(wait["payload"]["status"], "completed");
+    assert_eq!(
+        wait["payload"]["result"]["output"],
+        "Echo: deferred chat hello"
+    );
+
+    let history_after = rpc_req(
+        &mut ws,
+        "chat-defer-4",
+        "chat.history",
+        Some(json!({
+            "sessionKey": "agent:main:chat-deferred",
+            "limit": 10
+        })),
+    )
+    .await;
+    assert_eq!(history_after["ok"], true);
+    assert!(
+        history_after["payload"]["messages"]
+            .as_array()
+            .is_some_and(|messages| {
+                messages.len() == 2
+                    && messages[0]["text"]
+                        .as_str()
+                        .is_some_and(|text| text == "deferred chat hello")
+                    && messages[1]["text"]
+                        .as_str()
+                        .is_some_and(|text| text == "Echo: deferred chat hello")
+            })
+    );
+
+    let replay = rpc_req(
+        &mut ws,
+        "chat-defer-5",
+        "chat.send",
+        Some(json!({
+            "sessionKey": "agent:main:chat-deferred",
+            "message": "ignored replay text",
+            "idempotencyKey": "run-chat-deferred-1",
+            "deferred": true
+        })),
+    )
+    .await;
+    assert_eq!(replay["ok"], true);
+    assert_eq!(replay["payload"]["runId"], "run-chat-deferred-1");
+    assert_eq!(replay["payload"]["status"], "completed");
+    assert_eq!(replay["payload"]["message"], "Echo: deferred chat hello");
+
+    server.stop().await;
+}
+
+#[tokio::test]
 async fn concurrent_agent_wait_calls_do_not_duplicate_deferred_execution() {
     let server = spawn_server(AuthMode::None).await;
     let mut ws_primary = connect_gateway(server.addr).await;

@@ -22,6 +22,8 @@ struct ChatSendParams {
     message: String,
     #[serde(default)]
     idempotency_key: Option<String>,
+    #[serde(default)]
+    deferred: Option<bool>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -55,6 +57,7 @@ pub async fn handle_send(
 
     let session_key = resolve_session_key(parsed.session_key, parsed.session_id)?;
     let inbound = sanitize_chat_message(parsed.message)?;
+    let deferred = parsed.deferred.unwrap_or(false);
 
     let run_id = parsed
         .idempotency_key
@@ -72,6 +75,33 @@ pub async fn handle_send(
     ensure_session_exists(state, &session_key).await?;
 
     let now = now_unix_ms();
+    if deferred {
+        let run = AgentRunRecord {
+            id: run_id.clone(),
+            agent_id: "main".to_owned(),
+            input: inbound,
+            output: String::new(),
+            status: "queued".to_owned(),
+            session_key: Some(session_key.clone()),
+            metadata: json!({ "source": "chat.send", "deferred": true }),
+            created_at_ms: now,
+            updated_at_ms: now,
+            completed_at_ms: None,
+        };
+
+        state
+            .upsert_agent_run(&run)
+            .await
+            .map_err(map_domain_error)?;
+
+        return Ok(json!({
+            "runId": run_id,
+            "status": "queued",
+            "sessionKey": session_key,
+            "message": Value::Null,
+        }));
+    }
+
     let reply = format!("Echo: {inbound}");
 
     let messages = vec![
@@ -105,7 +135,7 @@ pub async fn handle_send(
         output: reply.clone(),
         status: "completed".to_owned(),
         session_key: Some(session_key.clone()),
-        metadata: json!({ "source": "chat.send" }),
+        metadata: json!({ "source": "chat.send", "deferred": false }),
         created_at_ms: now,
         updated_at_ms: now,
         completed_at_ms: Some(now),
@@ -155,7 +185,11 @@ fn resolve_existing_chat_run(
         "sessionKey": existing
             .session_key
             .unwrap_or_else(|| requested_session_key.to_owned()),
-        "message": existing.output,
+        "message": if existing.status == "completed" || existing.status == "error" {
+            Value::from(existing.output)
+        } else {
+            Value::Null
+        },
     }))
 }
 
