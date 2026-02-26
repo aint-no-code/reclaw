@@ -301,6 +301,33 @@ async fn tools_invoke_gateway_request_returns_rpc_payload() {
 }
 
 #[tokio::test]
+async fn tools_invoke_gateway_request_supports_action_fallback() {
+    let server = spawn_server_with(AuthMode::Token("gateway-secret".to_owned()), |_| {}).await;
+
+    let client = reqwest::Client::new();
+    let response = client
+        .post(format!("http://{}/tools/invoke", server.addr))
+        .bearer_auth("gateway-secret")
+        .json(&json!({
+            "tool": "gateway.request",
+            "sessionKey": "agent:main:http-tools-action",
+            "action": "health",
+            "args": {}
+        }))
+        .send()
+        .await
+        .expect("tools.invoke request should return");
+
+    assert!(response.status().is_success());
+    let payload: Value = response.json().await.expect("response should be json");
+    assert_eq!(payload["ok"], true);
+    assert_eq!(payload["result"]["ok"], true);
+    assert_eq!(payload["result"]["runtime"], "rust");
+
+    server.stop().await;
+}
+
+#[tokio::test]
 async fn tools_invoke_rejects_unknown_tool_name() {
     let server = spawn_server_with(AuthMode::Token("gateway-secret".to_owned()), |_| {}).await;
 

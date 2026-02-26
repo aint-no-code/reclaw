@@ -21,6 +21,8 @@ use super::compat::authorize_gateway_http;
 struct ToolsInvokeRequest {
     tool: String,
     #[serde(default)]
+    action: Option<String>,
+    #[serde(default)]
     args: Option<Value>,
     #[serde(default)]
     session_key: Option<String>,
@@ -99,17 +101,23 @@ pub async fn invoke_handler(
         }
     };
 
+    let action_method = request
+        .action
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
     let Some(method) = args_obj
         .get("method")
         .and_then(Value::as_str)
         .map(str::trim)
         .filter(|value| !value.is_empty())
+        .or(action_method)
     else {
         return invoke_error(
             StatusCode::BAD_REQUEST,
             "invalid_request",
             ERROR_INVALID_REQUEST,
-            "tools.invoke gateway.request requires args.method",
+            "tools.invoke gateway.request requires args.method or action",
         );
     };
 
