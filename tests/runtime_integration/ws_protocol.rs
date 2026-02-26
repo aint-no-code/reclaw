@@ -941,6 +941,93 @@ async fn chat_abort_cancels_deferred_chat_send_run() {
 }
 
 #[tokio::test]
+async fn chat_abort_without_run_id_cancels_all_deferred_chat_send_runs() {
+    let server = spawn_server(AuthMode::None).await;
+    let mut ws = connect_gateway(server.addr).await;
+
+    ws.send(Message::Text(
+        connect_frame(
+            None,
+            1,
+            PROTOCOL_VERSION,
+            "operator",
+            "reclaw-chat-abort-all",
+            &[],
+        )
+        .to_string()
+        .into(),
+    ))
+    .await
+    .expect("connect frame should send");
+    let _ = recv_json(&mut ws).await;
+
+    for run_id in ["run-chat-abort-all-1", "run-chat-abort-all-2"] {
+        let queued = rpc_req(
+            &mut ws,
+            &format!("chat-abort-all-{run_id}"),
+            "chat.send",
+            Some(json!({
+                "sessionKey": "agent:main:chat-abort-all",
+                "message": "deferred chat to abort",
+                "idempotencyKey": run_id,
+                "deferred": true
+            })),
+        )
+        .await;
+        assert_eq!(queued["ok"], true);
+        assert_eq!(queued["payload"]["status"], "queued");
+        assert!(queued["payload"]["message"].is_null());
+    }
+
+    let aborted = rpc_req(
+        &mut ws,
+        "chat-abort-all-3",
+        "chat.abort",
+        Some(json!({
+            "sessionKey": "agent:main:chat-abort-all"
+        })),
+    )
+    .await;
+    assert_eq!(aborted["ok"], true);
+    assert_eq!(aborted["payload"]["aborted"], true);
+    let run_ids = aborted["payload"]["runIds"]
+        .as_array()
+        .expect("runIds should be an array");
+    assert_eq!(run_ids.len(), 2);
+    assert!(
+        run_ids
+            .iter()
+            .any(|value| value.as_str() == Some("run-chat-abort-all-1"))
+    );
+    assert!(
+        run_ids
+            .iter()
+            .any(|value| value.as_str() == Some("run-chat-abort-all-2"))
+    );
+
+    for (request_id, run_id) in [
+        ("chat-abort-all-4", "run-chat-abort-all-1"),
+        ("chat-abort-all-5", "run-chat-abort-all-2"),
+    ] {
+        let wait = rpc_req(
+            &mut ws,
+            request_id,
+            "agent.wait",
+            Some(json!({
+                "runId": run_id,
+                "timeoutMs": 500
+            })),
+        )
+        .await;
+        assert_eq!(wait["ok"], true);
+        assert_eq!(wait["payload"]["status"], "aborted");
+        assert!(wait["payload"]["result"]["output"].is_null());
+    }
+
+    server.stop().await;
+}
+
+#[tokio::test]
 async fn chat_abort_without_run_id_cancels_all_session_runs() {
     let server = spawn_server(AuthMode::None).await;
     let mut ws = connect_gateway(server.addr).await;
