@@ -17,6 +17,7 @@
 - `agent` ensures `sessionKey` exists in session storage before run execution.
 - `chat.abort` cancels queued/running agent runs for the same `sessionKey`.
 - `chat.abort` without `runId` cancels all non-terminal runs for the provided `sessionKey`.
+- `chat.abort` for completed or unknown runs is a no-op (`aborted == false`) and includes the requested run id in `runIds`.
 
 ## Error Rules
 
