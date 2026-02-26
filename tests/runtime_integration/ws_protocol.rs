@@ -1150,6 +1150,46 @@ async fn extended_method_groups_round_trip() {
                 .iter()
                 .any(|item| item["id"] == "extchat" && item["kind"] == "plugin"))
     );
+    assert_eq!(
+        channels["payload"]["channelsById"]["extchat"]["kind"],
+        "plugin"
+    );
+    assert_eq!(
+        channels["payload"]["channelDefaultAccountId"]["extchat"],
+        "default"
+    );
+    assert!(
+        channels["payload"]["channelAccounts"]["extchat"]
+            .as_array()
+            .is_some_and(|items| items
+                .iter()
+                .any(|item| item["accountId"] == "default" && item["connected"] == true))
+    );
+
+    let logout_plugin_account = rpc_req(
+        &mut ws,
+        "ext-2a",
+        "channels.logout",
+        Some(json!({ "channel": "extchat", "accountId": "ops" })),
+    )
+    .await;
+    assert_eq!(logout_plugin_account["ok"], true);
+    assert_eq!(logout_plugin_account["payload"]["accountId"], "ops");
+
+    let channels_after_logout =
+        rpc_req(&mut ws, "ext-2b", "channels.status", Some(json!({}))).await;
+    assert_eq!(channels_after_logout["ok"], true);
+    assert!(
+        channels_after_logout["payload"]["channelAccounts"]["extchat"]
+            .as_array()
+            .is_some_and(|items| items
+                .iter()
+                .any(|item| { item["accountId"] == "ops" && item["connected"] == false }))
+    );
+    assert_eq!(
+        channels_after_logout["payload"]["channelsById"]["extchat"]["connected"],
+        true
+    );
 
     let logout = rpc_req(
         &mut ws,
