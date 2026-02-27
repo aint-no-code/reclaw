@@ -64,7 +64,7 @@ struct AgentIdentityParams {
 
 pub async fn handle_agent(
     state: &SharedState,
-    _session: &SessionContext,
+    session: &SessionContext,
     params: Option<&Value>,
 ) -> Result<Value, crate::protocol::ErrorShape> {
     let parsed: AgentRunParams = parse_required_params("agent", params)?;
@@ -120,7 +120,7 @@ pub async fn handle_agent(
             RUN_STATUS_RUNNING.to_owned()
         },
         session_key: Some(session_key.clone()),
-        metadata: agent_run_metadata(deferred),
+        metadata: agent_run_metadata(deferred, Some(session.conn_id.as_str())),
         created_at_ms: now,
         updated_at_ms: now,
         completed_at_ms: None,
@@ -148,12 +148,13 @@ pub async fn handle_agent(
     ))
 }
 
-fn agent_run_metadata(deferred: bool) -> Value {
+fn agent_run_metadata(deferred: bool, origin_conn_id: Option<&str>) -> Value {
     json!({
         "runtime": "reclaw-core",
         "source": "agent",
         "lineage": "openclaw",
         "deferred": deferred,
+        "originConnId": origin_conn_id,
     })
 }
 
@@ -176,6 +177,7 @@ fn agent_method_response(
 
 async fn publish_agent_event(
     state: &SharedState,
+    target_conn_id: Option<&str>,
     run_id: &str,
     session_key: &str,
     stream: &str,
@@ -183,7 +185,8 @@ async fn publish_agent_event(
     data: Value,
 ) {
     state
-        .publish_gateway_event(
+        .publish_gateway_event_for(
+            target_conn_id,
             "agent",
             json!({
                 "runId": run_id,
@@ -203,12 +206,14 @@ fn run_source(run: &AgentRunRecord) -> Option<&str> {
 
 async fn publish_chat_event_final(
     state: &SharedState,
+    target_conn_id: Option<&str>,
     run_id: &str,
     session_key: &str,
     text: &str,
 ) {
     state
-        .publish_gateway_event(
+        .publish_gateway_event_for(
+            target_conn_id,
             "chat",
             json!({
                 "runId": run_id,
@@ -227,12 +232,14 @@ async fn publish_chat_event_final(
 
 async fn publish_chat_event_error(
     state: &SharedState,
+    target_conn_id: Option<&str>,
     run_id: &str,
     session_key: &str,
     error_message: &str,
 ) {
     state
-        .publish_gateway_event(
+        .publish_gateway_event_for(
+            target_conn_id,
             "chat",
             json!({
                 "runId": run_id,
@@ -282,9 +289,15 @@ async fn execute_agent_run(
     if let Some(existing) = load_terminal_run(state, &run.id).await? {
         return Ok(existing);
     }
+    let target_conn_id = run
+        .metadata
+        .get("originConnId")
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty());
 
     publish_agent_event(
         state,
+        target_conn_id,
         &run.id,
         &session_key,
         "lifecycle",
@@ -326,6 +339,7 @@ async fn execute_agent_run(
         if finalized {
             publish_agent_event(
                 state,
+                target_conn_id,
                 &run.id,
                 &session_key,
                 "lifecycle",
@@ -337,7 +351,14 @@ async fn execute_agent_run(
             )
             .await;
             if run_source(&run) == Some("chat.send") {
-                publish_chat_event_error(state, &run.id, &session_key, run.output.as_str()).await;
+                publish_chat_event_error(
+                    state,
+                    target_conn_id,
+                    &run.id,
+                    &session_key,
+                    run.output.as_str(),
+                )
+                .await;
             }
         }
         if !finalized
@@ -367,6 +388,7 @@ async fn execute_agent_run(
     if finalized {
         publish_agent_event(
             state,
+            target_conn_id,
             &run.id,
             &session_key,
             "assistant",
@@ -376,6 +398,7 @@ async fn execute_agent_run(
         .await;
         publish_agent_event(
             state,
+            target_conn_id,
             &run.id,
             &session_key,
             "lifecycle",
@@ -384,7 +407,14 @@ async fn execute_agent_run(
         )
         .await;
         if run_source(&run) == Some("chat.send") {
-            publish_chat_event_final(state, &run.id, &session_key, run.output.as_str()).await;
+            publish_chat_event_final(
+                state,
+                target_conn_id,
+                &run.id,
+                &session_key,
+                run.output.as_str(),
+            )
+            .await;
         }
         return Ok(run);
     }

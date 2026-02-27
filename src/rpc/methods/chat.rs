@@ -50,7 +50,7 @@ struct ChatAbortParams {
 
 pub async fn handle_send(
     state: &SharedState,
-    _session: &SessionContext,
+    session: &SessionContext,
     params: Option<&Value>,
 ) -> Result<Value, crate::protocol::ErrorShape> {
     let parsed: ChatSendParams = parse_required_params("chat.send", params)?;
@@ -83,7 +83,11 @@ pub async fn handle_send(
             output: String::new(),
             status: "queued".to_owned(),
             session_key: Some(session_key.clone()),
-            metadata: json!({ "source": "chat.send", "deferred": true }),
+            metadata: json!({
+                "source": "chat.send",
+                "deferred": true,
+                "originConnId": session.conn_id.as_str(),
+            }),
             created_at_ms: now,
             updated_at_ms: now,
             completed_at_ms: None,
@@ -135,7 +139,11 @@ pub async fn handle_send(
         output: reply.clone(),
         status: "completed".to_owned(),
         session_key: Some(session_key.clone()),
-        metadata: json!({ "source": "chat.send", "deferred": false }),
+        metadata: json!({
+            "source": "chat.send",
+            "deferred": false,
+            "originConnId": session.conn_id.as_str(),
+        }),
         created_at_ms: now,
         updated_at_ms: now,
         completed_at_ms: Some(now),
@@ -146,7 +154,15 @@ pub async fn handle_send(
         .await
         .map_err(map_domain_error)?;
 
-    publish_chat_final_event(state, &run_id, &session_key, &reply, now).await;
+    publish_chat_final_event(
+        state,
+        Some(session.conn_id.as_str()),
+        &run_id,
+        &session_key,
+        &reply,
+        now,
+    )
+    .await;
 
     Ok(json!({
         "runId": run_id,
@@ -158,13 +174,15 @@ pub async fn handle_send(
 
 async fn publish_chat_final_event(
     state: &SharedState,
+    target_conn_id: Option<&str>,
     run_id: &str,
     session_key: &str,
     reply: &str,
     timestamp: u64,
 ) {
     state
-        .publish_gateway_event(
+        .publish_gateway_event_for(
+            target_conn_id,
             "chat",
             json!({
                 "runId": run_id,

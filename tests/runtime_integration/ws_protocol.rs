@@ -406,6 +406,98 @@ async fn deferred_chat_send_pushes_agent_and_chat_events_when_capability_enabled
 }
 
 #[tokio::test]
+async fn capability_event_push_is_scoped_to_origin_connection() {
+    let server = spawn_server(AuthMode::None).await;
+
+    let mut ws_origin = connect_gateway(server.addr).await;
+    ws_origin
+        .send(Message::Text(
+            json!({
+                "type": "req",
+                "id": "connect-1",
+                "method": "connect",
+                "params": {
+                    "minProtocol": PROTOCOL_VERSION,
+                    "maxProtocol": PROTOCOL_VERSION,
+                    "client": {
+                        "id": "reclaw-origin",
+                        "displayName": "Reclaw Origin",
+                        "version": "0.0.1",
+                        "platform": "test",
+                        "mode": "cli"
+                    },
+                    "role": "operator",
+                    "caps": ["agent-events-v1"]
+                }
+            })
+            .to_string()
+            .into(),
+        ))
+        .await
+        .expect("origin connect frame should send");
+    let origin_hello = recv_json(&mut ws_origin).await;
+    assert_eq!(origin_hello["ok"], true);
+
+    let mut ws_observer = connect_gateway(server.addr).await;
+    ws_observer
+        .send(Message::Text(
+            json!({
+                "type": "req",
+                "id": "connect-1",
+                "method": "connect",
+                "params": {
+                    "minProtocol": PROTOCOL_VERSION,
+                    "maxProtocol": PROTOCOL_VERSION,
+                    "client": {
+                        "id": "reclaw-observer",
+                        "displayName": "Reclaw Observer",
+                        "version": "0.0.1",
+                        "platform": "test",
+                        "mode": "cli"
+                    },
+                    "role": "operator",
+                    "caps": ["agent-events-v1"]
+                }
+            })
+            .to_string()
+            .into(),
+        ))
+        .await
+        .expect("observer connect frame should send");
+    let observer_hello = recv_json(&mut ws_observer).await;
+    assert_eq!(observer_hello["ok"], true);
+
+    let response = rpc_req(
+        &mut ws_origin,
+        "evt-origin-1",
+        "agent",
+        Some(json!({
+            "runId": "run-origin-only-1",
+            "sessionKey": "agent:main:origin-only",
+            "agentId": "main",
+            "input": "origin should receive events"
+        })),
+    )
+    .await;
+    assert_eq!(response["ok"], true);
+    assert_eq!(response["payload"]["summary"], "completed");
+
+    let origin_event_one = recv_json(&mut ws_origin).await;
+    let origin_event_two = recv_json(&mut ws_origin).await;
+    let origin_event_three = recv_json(&mut ws_origin).await;
+    for event in [&origin_event_one, &origin_event_two, &origin_event_three] {
+        assert_eq!(event["type"], "evt");
+        assert_eq!(event["event"], "agent");
+        assert_eq!(event["payload"]["runId"], "run-origin-only-1");
+    }
+
+    let observer_event = timeout(Duration::from_millis(250), recv_json(&mut ws_observer)).await;
+    assert!(observer_event.is_err());
+
+    server.stop().await;
+}
+
+#[tokio::test]
 async fn method_groups_round_trip() {
     let server = spawn_server(AuthMode::None).await;
     let mut ws = connect_gateway(server.addr).await;

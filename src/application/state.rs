@@ -212,20 +212,35 @@ impl SharedState {
     }
 
     pub async fn publish_gateway_event(&self, event: &str, payload: Value) {
+        self.publish_gateway_event_for(None, event, payload).await;
+    }
+
+    pub async fn publish_gateway_event_for(
+        &self,
+        target_conn_id: Option<&str>,
+        event: &str,
+        payload: Value,
+    ) {
         let envelope = GatewayEventEnvelope {
             event: event.to_owned(),
             payload,
             ts: now_unix_ms(),
         };
 
-        let subscribers = self
-            .inner
-            .gateway_event_subscribers
-            .read()
-            .await
-            .iter()
-            .map(|(conn_id, tx)| (conn_id.clone(), tx.clone()))
-            .collect::<Vec<_>>();
+        let subscribers = {
+            let guard = self.inner.gateway_event_subscribers.read().await;
+            match target_conn_id {
+                Some(conn_id) => guard
+                    .get(conn_id)
+                    .cloned()
+                    .map(|tx| vec![(conn_id.to_owned(), tx)])
+                    .unwrap_or_default(),
+                None => guard
+                    .iter()
+                    .map(|(conn_id, tx)| (conn_id.clone(), tx.clone()))
+                    .collect::<Vec<_>>(),
+            }
+        };
 
         let mut stale = Vec::new();
         for (conn_id, tx) in subscribers {
