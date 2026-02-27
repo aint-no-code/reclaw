@@ -197,6 +197,54 @@ async fn publish_agent_event(
         .await;
 }
 
+fn run_source(run: &AgentRunRecord) -> Option<&str> {
+    run.metadata.get("source").and_then(Value::as_str)
+}
+
+async fn publish_chat_event_final(
+    state: &SharedState,
+    run_id: &str,
+    session_key: &str,
+    text: &str,
+) {
+    state
+        .publish_gateway_event(
+            "chat",
+            json!({
+                "runId": run_id,
+                "sessionKey": session_key,
+                "state": "final",
+                "seq": AGENT_EVENT_SEQ_END,
+                "message": {
+                    "role": "assistant",
+                    "content": [{ "type": "text", "text": text }],
+                    "timestamp": now_unix_ms(),
+                },
+            }),
+        )
+        .await;
+}
+
+async fn publish_chat_event_error(
+    state: &SharedState,
+    run_id: &str,
+    session_key: &str,
+    error_message: &str,
+) {
+    state
+        .publish_gateway_event(
+            "chat",
+            json!({
+                "runId": run_id,
+                "sessionKey": session_key,
+                "state": "error",
+                "seq": AGENT_EVENT_SEQ_END,
+                "errorMessage": error_message,
+            }),
+        )
+        .await;
+}
+
 async fn execute_agent_run(
     state: &SharedState,
     mut run: AgentRunRecord,
@@ -288,6 +336,9 @@ async fn execute_agent_run(
                 }),
             )
             .await;
+            if run_source(&run) == Some("chat.send") {
+                publish_chat_event_error(state, &run.id, &session_key, run.output.as_str()).await;
+            }
         }
         if !finalized
             && let Some(latest) = state
@@ -332,6 +383,9 @@ async fn execute_agent_run(
             json!({ "phase": "end" }),
         )
         .await;
+        if run_source(&run) == Some("chat.send") {
+            publish_chat_event_final(state, &run.id, &session_key, run.output.as_str()).await;
+        }
         return Ok(run);
     }
     if let Some(latest) = state

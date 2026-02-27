@@ -146,12 +146,39 @@ pub async fn handle_send(
         .await
         .map_err(map_domain_error)?;
 
+    publish_chat_final_event(state, &run_id, &session_key, &reply, now).await;
+
     Ok(json!({
         "runId": run_id,
         "status": "completed",
         "sessionKey": session_key,
         "message": reply,
     }))
+}
+
+async fn publish_chat_final_event(
+    state: &SharedState,
+    run_id: &str,
+    session_key: &str,
+    reply: &str,
+    timestamp: u64,
+) {
+    state
+        .publish_gateway_event(
+            "chat",
+            json!({
+                "runId": run_id,
+                "sessionKey": session_key,
+                "state": "final",
+                "seq": 1,
+                "message": {
+                    "role": "assistant",
+                    "content": [{ "type": "text", "text": reply }],
+                    "timestamp": timestamp,
+                },
+            }),
+        )
+        .await;
 }
 
 fn resolve_existing_chat_run(

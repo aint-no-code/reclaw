@@ -241,6 +241,68 @@ async fn agent_event_push_streams_lifecycle_when_capability_enabled() {
 }
 
 #[tokio::test]
+async fn chat_event_push_streams_final_message_when_capability_enabled() {
+    let server = spawn_server(AuthMode::None).await;
+    let mut ws = connect_gateway(server.addr).await;
+
+    ws.send(Message::Text(
+        json!({
+            "type": "req",
+            "id": "connect-1",
+            "method": "connect",
+            "params": {
+                "minProtocol": PROTOCOL_VERSION,
+                "maxProtocol": PROTOCOL_VERSION,
+                "client": {
+                    "id": "reclaw-chat-events",
+                    "displayName": "Reclaw Chat Events",
+                    "version": "0.0.1",
+                    "platform": "test",
+                    "mode": "cli"
+                },
+                "role": "operator",
+                "caps": ["agent-events-v1"]
+            }
+        })
+        .to_string()
+        .into(),
+    ))
+    .await
+    .expect("connect frame should send");
+
+    let hello = recv_json(&mut ws).await;
+    assert_eq!(hello["ok"], true);
+
+    let response = rpc_req(
+        &mut ws,
+        "chat-evt-1",
+        "chat.send",
+        Some(json!({
+            "sessionKey": "agent:main:chat-events",
+            "message": "stream chat event",
+            "idempotencyKey": "run-chat-events-1"
+        })),
+    )
+    .await;
+    assert_eq!(response["ok"], true);
+    assert_eq!(response["payload"]["status"], "completed");
+    assert_eq!(response["payload"]["message"], "Echo: stream chat event");
+
+    let event = recv_json(&mut ws).await;
+    assert_eq!(event["type"], "evt");
+    assert_eq!(event["event"], "chat");
+    assert_eq!(event["payload"]["runId"], "run-chat-events-1");
+    assert_eq!(event["payload"]["sessionKey"], "agent:main:chat-events");
+    assert_eq!(event["payload"]["state"], "final");
+    assert_eq!(
+        event["payload"]["message"]["content"][0]["text"],
+        "Echo: stream chat event"
+    );
+
+    server.stop().await;
+}
+
+#[tokio::test]
 async fn method_groups_round_trip() {
     let server = spawn_server(AuthMode::None).await;
     let mut ws = connect_gateway(server.addr).await;

@@ -15,7 +15,7 @@
 
 - `agent` accepts optional `deferred=true` to create a queued run that executes when `agent.wait` is called.
 - `agent` ensures `sessionKey` exists in session storage before run execution.
-- WebSocket clients with connect capability `agent-events-v1` receive server-push `evt` frames for agent lifecycle/assistant stream updates.
+- WebSocket clients with connect capability `agent-events-v1` receive server-push `evt` frames for `agent` lifecycle/assistant updates and `chat` final/error updates.
 - `chat.abort` cancels queued/running agent runs for the same `sessionKey`.
 - `chat.abort` without `runId` cancels all non-terminal runs for the provided `sessionKey`.
 - `chat.abort` for completed or unknown runs is a no-op (`aborted == false`) and includes the requested run id in `runIds`.
