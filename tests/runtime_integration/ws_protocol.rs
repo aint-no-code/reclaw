@@ -303,6 +303,109 @@ async fn chat_event_push_streams_final_message_when_capability_enabled() {
 }
 
 #[tokio::test]
+async fn deferred_chat_send_pushes_agent_and_chat_events_when_capability_enabled() {
+    let server = spawn_server(AuthMode::None).await;
+    let mut ws = connect_gateway(server.addr).await;
+
+    ws.send(Message::Text(
+        json!({
+            "type": "req",
+            "id": "connect-1",
+            "method": "connect",
+            "params": {
+                "minProtocol": PROTOCOL_VERSION,
+                "maxProtocol": PROTOCOL_VERSION,
+                "client": {
+                    "id": "reclaw-chat-events-deferred",
+                    "displayName": "Reclaw Chat Events Deferred",
+                    "version": "0.0.1",
+                    "platform": "test",
+                    "mode": "cli"
+                },
+                "role": "operator",
+                "caps": ["agent-events-v1"]
+            }
+        })
+        .to_string()
+        .into(),
+    ))
+    .await
+    .expect("connect frame should send");
+
+    let hello = recv_json(&mut ws).await;
+    assert_eq!(hello["ok"], true);
+
+    let queued = rpc_req(
+        &mut ws,
+        "chat-evt-def-1",
+        "chat.send",
+        Some(json!({
+            "sessionKey": "agent:main:chat-events-deferred",
+            "message": "deferred event message",
+            "idempotencyKey": "run-chat-events-deferred-1",
+            "deferred": true
+        })),
+    )
+    .await;
+    assert_eq!(queued["ok"], true);
+    assert_eq!(queued["payload"]["status"], "queued");
+
+    let waited = rpc_req(
+        &mut ws,
+        "chat-evt-def-2",
+        "agent.wait",
+        Some(json!({
+            "runId": "run-chat-events-deferred-1",
+            "timeoutMs": 500
+        })),
+    )
+    .await;
+    assert_eq!(waited["ok"], true);
+    assert_eq!(waited["payload"]["status"], "completed");
+    assert_eq!(
+        waited["payload"]["result"]["output"],
+        "Echo: deferred event message"
+    );
+
+    let event_start = recv_json(&mut ws).await;
+    let event_assistant = recv_json(&mut ws).await;
+    let event_end = recv_json(&mut ws).await;
+    let event_chat = recv_json(&mut ws).await;
+
+    assert_eq!(event_start["type"], "evt");
+    assert_eq!(event_start["event"], "agent");
+    assert_eq!(
+        event_start["payload"]["runId"],
+        "run-chat-events-deferred-1"
+    );
+    assert_eq!(event_start["payload"]["stream"], "lifecycle");
+    assert_eq!(event_start["payload"]["data"]["phase"], "start");
+
+    assert_eq!(event_assistant["type"], "evt");
+    assert_eq!(event_assistant["event"], "agent");
+    assert_eq!(event_assistant["payload"]["stream"], "assistant");
+    assert_eq!(
+        event_assistant["payload"]["data"]["text"],
+        "Echo: deferred event message"
+    );
+
+    assert_eq!(event_end["type"], "evt");
+    assert_eq!(event_end["event"], "agent");
+    assert_eq!(event_end["payload"]["stream"], "lifecycle");
+    assert_eq!(event_end["payload"]["data"]["phase"], "end");
+
+    assert_eq!(event_chat["type"], "evt");
+    assert_eq!(event_chat["event"], "chat");
+    assert_eq!(event_chat["payload"]["state"], "final");
+    assert_eq!(
+        event_chat["payload"]["message"]["content"][0]["text"],
+        "Echo: deferred event message"
+    );
+
+    server.stop().await;
+}
+
+#[tokio::test]
 async fn method_groups_round_trip() {
     let server = spawn_server(AuthMode::None).await;
     let mut ws = connect_gateway(server.addr).await;
