@@ -22,6 +22,8 @@ use crate::{
     storage::now_unix_ms,
 };
 
+const AGENT_EVENTS_CAPABILITY: &str = "agent-events-v1";
+
 pub async fn ws_handler(
     ws: WebSocketUpgrade,
     State(state): State<SharedState>,
@@ -34,15 +36,50 @@ pub async fn ws_handler(
 async fn handle_socket(mut socket: WebSocket, state: SharedState, remote_addr: SocketAddr) {
     let remote_ip = Some(remote_addr.ip().to_string());
 
-    let session = match perform_handshake(&mut socket, &state, remote_ip).await {
+    let handshake = match perform_handshake(&mut socket, &state, remote_ip).await {
         Ok(context) => context,
         Err(()) => {
             debug!("handshake failed remote={remote_addr}");
             return;
         }
     };
+    let session = handshake.session;
+    let mut event_rx = if handshake.accepts_event_push {
+        Some(
+            state
+                .register_gateway_event_subscriber(&session.conn_id)
+                .await,
+        )
+    } else {
+        None
+    };
 
-    while let Some(next) = socket.recv().await {
+    loop {
+        let next = if let Some(rx) = event_rx.as_mut() {
+            tokio::select! {
+                maybe_event = rx.recv() => {
+                    match maybe_event {
+                        Some(event) => {
+                            if send_event(&mut socket, event).await.is_err() {
+                                break;
+                            }
+                            continue;
+                        }
+                        None => {
+                            event_rx = None;
+                            continue;
+                        }
+                    }
+                }
+                next = socket.recv() => next,
+            }
+        } else {
+            socket.recv().await
+        };
+
+        let Some(next) = next else {
+            break;
+        };
         let message = match next {
             Ok(message) => message,
             Err(error) => {
@@ -81,6 +118,9 @@ async fn handle_socket(mut socket: WebSocket, state: SharedState, remote_addr: S
         }
     }
 
+    state
+        .unregister_gateway_event_subscriber(&session.conn_id)
+        .await;
     if let Err(error) = state.unregister_client(&session.conn_id).await {
         warn!(
             "failed to unregister client conn={}: {error}",
@@ -94,11 +134,16 @@ async fn handle_socket(mut socket: WebSocket, state: SharedState, remote_addr: S
     );
 }
 
+struct HandshakeContext {
+    session: SessionContext,
+    accepts_event_push: bool,
+}
+
 async fn perform_handshake(
     socket: &mut WebSocket,
     state: &SharedState,
     remote_ip: Option<String>,
-) -> Result<SessionContext, ()> {
+) -> Result<HandshakeContext, ()> {
     let text = match timeout(
         state.config().handshake_timeout,
         recv_next_text(socket, state),
@@ -208,6 +253,10 @@ async fn perform_handshake(
     limiter.reset(&auth_key).await;
 
     let conn_id = uuid::Uuid::new_v4().to_string();
+    let accepts_event_push = connect_params
+        .caps
+        .iter()
+        .any(|cap| cap == AGENT_EVENTS_CAPABILITY);
     let mut scopes = sanitize_scopes(&connect_params.scopes);
     if role == "operator" && scopes.is_empty() {
         scopes = default_operator_scopes();
@@ -304,12 +353,15 @@ async fn perform_handshake(
     }
 
     debug!("handshake ok conn={conn_id} role={role}");
-    Ok(SessionContext {
-        conn_id,
-        role,
-        scopes,
-        client_id: connect_params.client.id,
-        client_mode: connect_params.client.mode,
+    Ok(HandshakeContext {
+        session: SessionContext {
+            conn_id,
+            role,
+            scopes,
+            client_id: connect_params.client.id,
+            client_mode: connect_params.client.mode,
+        },
+        accepts_event_push,
     })
 }
 
@@ -365,6 +417,32 @@ async fn send_response(
         .await
         .map_err(|error| {
             warn!("failed to send websocket response: {error}");
+        })
+}
+
+async fn send_event(
+    socket: &mut WebSocket,
+    event: crate::application::state::GatewayEventEnvelope,
+) -> Result<(), ()> {
+    let frame = json!({
+        "type": "evt",
+        "event": event.event,
+        "payload": event.payload,
+        "ts": event.ts,
+    });
+    let text = match serde_json::to_string(&frame) {
+        Ok(value) => value,
+        Err(error) => {
+            error!("failed to serialize websocket event: {error}");
+            return Err(());
+        }
+    };
+
+    socket
+        .send(Message::Text(text.into()))
+        .await
+        .map_err(|error| {
+            warn!("failed to send websocket event: {error}");
         })
 }
 

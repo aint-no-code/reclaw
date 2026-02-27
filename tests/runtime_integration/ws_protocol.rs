@@ -2,6 +2,7 @@ use futures_util::SinkExt;
 use reclaw_core::application::config::{AuthMode, ChannelWebhookPluginConfig};
 use reclaw_core::protocol::PROTOCOL_VERSION;
 use serde_json::json;
+use tokio::time::{Duration, timeout};
 use tokio_tungstenite::tungstenite::Message;
 
 use super::support::{
@@ -114,6 +115,127 @@ async fn unknown_methods_and_validation_errors_are_explicit() {
     )
     .await;
     assert_eq!(wizard["ok"], true);
+
+    server.stop().await;
+}
+
+#[tokio::test]
+async fn agent_event_push_requires_capability_opt_in() {
+    let server = spawn_server(AuthMode::None).await;
+    let mut ws = connect_gateway(server.addr).await;
+
+    ws.send(Message::Text(
+        connect_frame(
+            None,
+            1,
+            PROTOCOL_VERSION,
+            "operator",
+            "reclaw-no-events",
+            &[],
+        )
+        .to_string()
+        .into(),
+    ))
+    .await
+    .expect("connect frame should send");
+    let _ = recv_json(&mut ws).await;
+
+    let response = rpc_req(
+        &mut ws,
+        "evt-opt-1",
+        "agent",
+        Some(json!({
+            "runId": "run-no-events-1",
+            "sessionKey": "agent:main:no-events",
+            "agentId": "main",
+            "input": "no events expected"
+        })),
+    )
+    .await;
+    assert_eq!(response["ok"], true);
+    assert_eq!(response["payload"]["summary"], "completed");
+
+    let next = timeout(Duration::from_millis(200), recv_json(&mut ws)).await;
+    assert!(next.is_err());
+
+    server.stop().await;
+}
+
+#[tokio::test]
+async fn agent_event_push_streams_lifecycle_when_capability_enabled() {
+    let server = spawn_server(AuthMode::None).await;
+    let mut ws = connect_gateway(server.addr).await;
+
+    ws.send(Message::Text(
+        json!({
+            "type": "req",
+            "id": "connect-1",
+            "method": "connect",
+            "params": {
+                "minProtocol": PROTOCOL_VERSION,
+                "maxProtocol": PROTOCOL_VERSION,
+                "client": {
+                    "id": "reclaw-events",
+                    "displayName": "Reclaw Events",
+                    "version": "0.0.1",
+                    "platform": "test",
+                    "mode": "cli"
+                },
+                "role": "operator",
+                "caps": ["agent-events-v1"]
+            }
+        })
+        .to_string()
+        .into(),
+    ))
+    .await
+    .expect("connect frame should send");
+
+    let hello = recv_json(&mut ws).await;
+    assert_eq!(hello["ok"], true);
+
+    let response = rpc_req(
+        &mut ws,
+        "evt-cap-1",
+        "agent",
+        Some(json!({
+            "runId": "run-events-1",
+            "sessionKey": "agent:main:events",
+            "agentId": "main",
+            "input": "stream this"
+        })),
+    )
+    .await;
+    assert_eq!(response["ok"], true);
+    assert_eq!(response["payload"]["summary"], "completed");
+
+    let event_start = recv_json(&mut ws).await;
+    let event_assistant = recv_json(&mut ws).await;
+    let event_end = recv_json(&mut ws).await;
+
+    assert_eq!(event_start["type"], "evt");
+    assert_eq!(event_start["event"], "agent");
+    assert_eq!(event_start["payload"]["runId"], "run-events-1");
+    assert_eq!(event_start["payload"]["stream"], "lifecycle");
+    assert_eq!(event_start["payload"]["seq"], 1);
+    assert_eq!(event_start["payload"]["data"]["phase"], "start");
+
+    assert_eq!(event_assistant["type"], "evt");
+    assert_eq!(event_assistant["event"], "agent");
+    assert_eq!(event_assistant["payload"]["runId"], "run-events-1");
+    assert_eq!(event_assistant["payload"]["stream"], "assistant");
+    assert_eq!(event_assistant["payload"]["seq"], 2);
+    assert_eq!(
+        event_assistant["payload"]["data"]["text"],
+        "Echo: stream this"
+    );
+
+    assert_eq!(event_end["type"], "evt");
+    assert_eq!(event_end["event"], "agent");
+    assert_eq!(event_end["payload"]["runId"], "run-events-1");
+    assert_eq!(event_end["payload"]["stream"], "lifecycle");
+    assert_eq!(event_end["payload"]["seq"], 3);
+    assert_eq!(event_end["payload"]["data"]["phase"], "end");
 
     server.stop().await;
 }

@@ -20,6 +20,9 @@ const RUN_STATUS_RUNNING: &str = "running";
 const RUN_STATUS_COMPLETED: &str = "completed";
 const RUN_STATUS_ERROR: &str = "error";
 const RUN_STATUS_ABORTED: &str = "aborted";
+const AGENT_EVENT_SEQ_START: u64 = 1;
+const AGENT_EVENT_SEQ_ASSISTANT: u64 = 2;
+const AGENT_EVENT_SEQ_END: u64 = 3;
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -171,6 +174,29 @@ fn agent_method_response(
     })
 }
 
+async fn publish_agent_event(
+    state: &SharedState,
+    run_id: &str,
+    session_key: &str,
+    stream: &str,
+    seq: u64,
+    data: Value,
+) {
+    state
+        .publish_gateway_event(
+            "agent",
+            json!({
+                "runId": run_id,
+                "stream": stream,
+                "seq": seq,
+                "ts": now_unix_ms(),
+                "sessionKey": session_key,
+                "data": data,
+            }),
+        )
+        .await;
+}
+
 async fn execute_agent_run(
     state: &SharedState,
     mut run: AgentRunRecord,
@@ -209,6 +235,16 @@ async fn execute_agent_run(
         return Ok(existing);
     }
 
+    publish_agent_event(
+        state,
+        &run.id,
+        &session_key,
+        "lifecycle",
+        AGENT_EVENT_SEQ_START,
+        json!({ "phase": "start" }),
+    )
+    .await;
+
     let output = format!("Echo: {}", run.input);
     let messages = vec![
         ChatMessage {
@@ -239,6 +275,20 @@ async fn execute_agent_run(
             .finalize_agent_run_if_status(&run, RUN_STATUS_RUNNING)
             .await
             .map_err(map_domain_error)?;
+        if finalized {
+            publish_agent_event(
+                state,
+                &run.id,
+                &session_key,
+                "lifecycle",
+                AGENT_EVENT_SEQ_END,
+                json!({
+                    "phase": "error",
+                    "error": run.output.as_str(),
+                }),
+            )
+            .await;
+        }
         if !finalized
             && let Some(latest) = state
                 .get_agent_run(&run.id)
@@ -264,6 +314,24 @@ async fn execute_agent_run(
         .await
         .map_err(map_domain_error)?;
     if finalized {
+        publish_agent_event(
+            state,
+            &run.id,
+            &session_key,
+            "assistant",
+            AGENT_EVENT_SEQ_ASSISTANT,
+            json!({ "text": run.output.as_str() }),
+        )
+        .await;
+        publish_agent_event(
+            state,
+            &run.id,
+            &session_key,
+            "lifecycle",
+            AGENT_EVENT_SEQ_END,
+            json!({ "phase": "end" }),
+        )
+        .await;
         return Ok(run);
     }
     if let Some(latest) = state

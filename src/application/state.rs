@@ -9,6 +9,7 @@ use std::{
 
 use serde_json::{Map, Value, json};
 use tokio::sync::RwLock;
+use tokio::sync::mpsc::{Receiver, Sender, channel, error::TrySendError};
 
 use crate::{
     application::{config::RuntimeConfig, cron_schedule::compute_next_run_ms},
@@ -41,6 +42,7 @@ struct InnerState {
     control_plane_rate_limiter: AuthRateLimiter,
     presence_version: AtomicU64,
     health_version: AtomicU64,
+    gateway_event_subscribers: RwLock<HashMap<String, Sender<GatewayEventEnvelope>>>,
     cron_enabled: RwLock<bool>,
     cron_last_tick_ms: RwLock<Option<u64>>,
 }
@@ -62,6 +64,15 @@ pub struct ConnectedClient {
     pub connected_at: Instant,
     pub connected_at_ms: u64,
 }
+
+#[derive(Debug, Clone)]
+pub struct GatewayEventEnvelope {
+    pub event: String,
+    pub payload: Value,
+    pub ts: u64,
+}
+
+const GATEWAY_EVENT_BUFFER_CAPACITY: usize = 256;
 
 impl SharedState {
     pub async fn new(
@@ -88,6 +99,7 @@ impl SharedState {
                 config,
                 presence_version: AtomicU64::new(0),
                 health_version: AtomicU64::new(0),
+                gateway_event_subscribers: RwLock::new(HashMap::new()),
             }),
         })
     }
@@ -163,6 +175,7 @@ impl SharedState {
 
     pub async fn unregister_client(&self, conn_id: &str) -> Result<(), DomainError> {
         let removed = self.inner.clients.write().await.remove(conn_id);
+        self.unregister_gateway_event_subscriber(conn_id).await;
         if let Some(client) = removed {
             self.inner.presence_version.fetch_add(1, Ordering::Relaxed);
             if client.role == "node" {
@@ -175,6 +188,59 @@ impl SharedState {
             }
         }
         Ok(())
+    }
+
+    pub async fn register_gateway_event_subscriber(
+        &self,
+        conn_id: &str,
+    ) -> Receiver<GatewayEventEnvelope> {
+        let (tx, rx) = channel(GATEWAY_EVENT_BUFFER_CAPACITY);
+        self.inner
+            .gateway_event_subscribers
+            .write()
+            .await
+            .insert(conn_id.to_owned(), tx);
+        rx
+    }
+
+    pub async fn unregister_gateway_event_subscriber(&self, conn_id: &str) {
+        self.inner
+            .gateway_event_subscribers
+            .write()
+            .await
+            .remove(conn_id);
+    }
+
+    pub async fn publish_gateway_event(&self, event: &str, payload: Value) {
+        let envelope = GatewayEventEnvelope {
+            event: event.to_owned(),
+            payload,
+            ts: now_unix_ms(),
+        };
+
+        let subscribers = self
+            .inner
+            .gateway_event_subscribers
+            .read()
+            .await
+            .iter()
+            .map(|(conn_id, tx)| (conn_id.clone(), tx.clone()))
+            .collect::<Vec<_>>();
+
+        let mut stale = Vec::new();
+        for (conn_id, tx) in subscribers {
+            match tx.try_send(envelope.clone()) {
+                Ok(()) => {}
+                Err(TrySendError::Full(_)) | Err(TrySendError::Closed(_)) => stale.push(conn_id),
+            }
+        }
+
+        if !stale.is_empty() {
+            let mut guard = self.inner.gateway_event_subscribers.write().await;
+            for conn_id in stale {
+                guard.remove(&conn_id);
+            }
+        }
     }
 
     pub async fn connection_count(&self) -> usize {
